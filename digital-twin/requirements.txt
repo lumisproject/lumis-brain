@@ -1,0 +1,44 @@
+# Core Dependencies
+python-dotenv
+pyyaml
+click
+
+# Repository Management
+gitpython
+
+# Code Parsing
+tree-sitter-language-pack
+libcst
+
+# Embeddings & Vector Store
+sentence-transformers
+faiss-cpu
+chromadb
+
+# Search & Retrieval
+rank-bm25
+networkx
+
+# API
+fastapi
+uvicorn
+pydantic
+python-multipart
+
+# Utilities
+tqdm
+numpy
+pandas
+pathspec
+
+# Caching
+diskcache
+redis
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+
+
+supabase
