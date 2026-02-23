@@ -351,9 +351,9 @@ export default function Dashboard() {
                 <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px' }}>AI Provider</label>
                 <select className="input-field" value={provider} onChange={e => setProvider(e.target.value)}>
                   <option value="openrouter">OpenRouter (Unified)</option>
-                  <option value="openai">Direct OpenAI</option>
-                  <option value="anthropic">Direct Anthropic</option>
-                  <option value="google">Direct Google Gemini</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="google">Google Gemini</option>
                 </select>
               </div>
 

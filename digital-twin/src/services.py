@@ -27,7 +27,7 @@ def get_embedding(text: str):
     return lc_embedder.embed_query(text)
 
 
-# 2. LLM INFRASTRUCTURE
+# 2. LLM INFRASTRUCTURE.
 def get_llm(temperature=0.2, user_config=None, reasoning_enabled=True):
     user_config = user_config or {}
 
