@@ -73,14 +73,6 @@ All configuration is handled via environment variables. Common options include:
 - Memory storage options
 
 Update the `.env` file to tailor the system’s behavior to your deployment needs.
-
-## Contributing
-
-Contributions are welcome! Please follow these steps:
-
-- Fork the repository and create a new branch for your changes.
-- Adhere to the established coding style and add tests where appropriate.
-- Submit a pull request describing your changes and their purpose.
 - Ensure your code passes all existing tests and includes new cases if applicable.
 
 ---
