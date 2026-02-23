@@ -2,6 +2,7 @@ import json
 import re
 import logging
 import ast
+from langchain_core.messages import BaseMessage
 from typing import List, Dict, Any
 from src.services import get_llm_completion
 from src.retriever import GraphRetriever
@@ -12,11 +13,12 @@ class LumisAgent:
     def __init__(self, project_id: str, mode: str = "single-turn", max_steps: int = 4):
         self.project_id = project_id
         self.mode = mode
+        self.user_config = None
         self.retriever = GraphRetriever(project_id)
         self.generator = AnswerGenerator(project_id)
         self.query_processor = QueryProcessor()
         self.max_steps = max_steps
-        self.conversation_history: List[Dict[str, str]] = []
+        self.conversation_history: List[BaseMessage] = []
         self.logger = logging.getLogger(__name__)
 
     def ask(self, user_query: str, reasoning_enabled: bool = True) -> str:
@@ -32,7 +34,7 @@ class LumisAgent:
         print(f"\n🤖 LUMIS: {user_query}")
 
         # --- FIX 1: Process query ONCE before the loop ---
-        processed_query = self.query_processor.process(user_query, self.conversation_history)
+        processed_query = self.query_processor.process(user_query, self.conversation_history, user_config=self.user_config)
         print(f"🎯 Intent: {processed_query.intent}")
         if processed_query.pseudocode_hints:
             print(f"💡 Pseudocode Hint Generated")
@@ -46,7 +48,8 @@ class LumisAgent:
             response_text = get_llm_completion(
                 self._get_system_prompt(), 
                 prompt, 
-                reasoning_enabled=reasoning_enabled
+                reasoning_enabled=reasoning_enabled,
+                user_config=self.user_config
             )
             
             # 2. Robust Parsing
@@ -74,7 +77,8 @@ class LumisAgent:
             query=user_query, 
             collected_elements=collected_elements, 
             repo_structure=repo_structure,
-            history=self.conversation_history
+            history=self.conversation_history,
+            user_config=self.user_config
         )
         self._update_history(user_query, result['answer'])
         return result['answer']
@@ -186,7 +190,7 @@ class LumisAgent:
                 
                 print(f"🔎 Executing Enhanced Search: {search_input[:100]}...")
 
-                data = self.retriever.search(search_input)
+                data = self.retriever.search(search_input, user_config=self.user_config)
                 
                 if data:
                     collected.extend(data)

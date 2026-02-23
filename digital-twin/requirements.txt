@@ -14,6 +14,12 @@ libcst
 sentence-transformers
 faiss-cpu
 chromadb
+langchain
+langchain-openai
+langchain-huggingface
+huggingface_hub
+langchain-anthropic
+langchain-google-genai
 
 # Search & Retrieval
 rank-bm25

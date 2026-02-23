@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -35,6 +35,7 @@ class ChatRequest(BaseModel):
     query: str
     mode: str = "single-turn"
     reasoning: bool = True
+    user_config: Optional[Dict] = None
 
 class IngestRequest(BaseModel):
     user_id: str
@@ -130,6 +131,11 @@ async def chat_endpoint(req: ChatRequest):
         agent = active_agents[req.project_id]
         agent.mode = req.mode
         
+        # --- NEW: Attach the user_config to the agent ---
+        agent.user_config = req.user_config 
+        # ------------------------------------------------
+
+        print("\nagent.user_config: ",agent.user_config)
         # 2. Execute agent logic in a background thread to keep the API responsive
         response_text = await asyncio.to_thread(
             agent.ask, 
@@ -142,7 +148,7 @@ async def chat_endpoint(req: ChatRequest):
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.post("/api/ingest")
 async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     try:

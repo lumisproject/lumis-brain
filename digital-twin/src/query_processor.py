@@ -51,49 +51,38 @@ class QueryProcessor:
             "auth", "login", "user", "session", "test", "spec"
         }
 
-    def process(self, query: str, conversation_history: List[Dict] = None) -> ProcessedQuery:
-        """
-        Main entry point to process a query.
-        """
+    def process(self, query: str, conversation_history: List[Dict] = None, user_config: Dict = None) -> ProcessedQuery:
+        """Main entry point to process a query."""
         query = query.strip()
         
-        # 1. Rule-based extraction
         intent = self._detect_intent(query)
         keywords = self._extract_keywords(query)
         filters = self._extract_filters(query)
         expanded = self._expand_query(query)
 
-        # 2. LLM Enhancement (Rewriting & Pseudocode)
         rewritten_query = None
         pseudocode_hints = None
         
         try:
-            enhancements = self._enhance_with_llm(query, intent, keywords, filters, conversation_history)
+            # FIX: Pass user_config down
+            enhancements = self._enhance_with_llm(query, intent, keywords, filters, conversation_history, user_config=user_config)
             
-            # Apply enhancements
-            if enhancements.get("refined_intent"):
-                intent = enhancements["refined_intent"]
-            
+            if enhancements.get("refined_intent"): intent = enhancements["refined_intent"]
             rewritten_query = enhancements.get("rewritten_query")
             pseudocode_hints = enhancements.get("pseudocode_hints")
-            
-            # Add LLM selected keywords to our list
-            if enhancements.get("selected_keywords"):
-                keywords.extend([k for k in enhancements["selected_keywords"] if k not in keywords])
+            if enhancements.get("selected_keywords"): keywords.extend([k for k in enhancements["selected_keywords"] if k not in keywords])
 
         except Exception as e:
             self.logger.error(f"LLM enhancement failed: {e}")
 
         return ProcessedQuery(
-            original=query,
-            expanded=expanded,
+            original=query, expanded=expanded,
             keywords=keywords,
             intent=intent,
             filters=filters,
-            rewritten_query=rewritten_query or expanded, # Fallback to expanded if LLM fails
-            pseudocode_hints=pseudocode_hints
+            rewritten_query=rewritten_query or expanded, pseudocode_hints=pseudocode_hints
         )
-
+    
     def _detect_intent(self, query: str) -> str:
         """Rule-based intent detection."""
         query_lower = query.lower()
@@ -130,8 +119,8 @@ class QueryProcessor:
         expanded = [synonyms.get(w, w) for w in words]
         return " ".join(expanded)
 
-    def _enhance_with_llm(self, query: str, intent: str, keywords: List[str], 
-                          filters: Dict, history: List[Dict]) -> Dict[str, Any]:
+    def _enhance_with_llm(self, query: str, intent: str, keywords: List[str],
+    filters: Dict, history: List[Dict], user_config: Dict = None) -> Dict[str, Any]:
         """Uses Lumis LLM service to generate advanced query metadata."""
         
         # Context from history if available
@@ -165,8 +154,8 @@ class QueryProcessor:
             PSEUDOCODE_HINTS: <value>
         """
         # Call your existing service
-        response = get_llm_completion(system_prompt, user_prompt, reasoning_enabled=True)
-        return self._parse_llm_response(response)
+        response = get_llm_completion(system_prompt, user_prompt, reasoning_enabled=True, user_config=user_config)
+        return self._parse_llm_response(response) if response else {}
 
     def _parse_llm_response(self, text: str) -> Dict[str, Any]:
         """Parses the text response into a dictionary."""

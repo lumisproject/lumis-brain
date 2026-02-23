@@ -25,14 +25,14 @@ class GraphRetriever:
             self.logger.error(f"Error fetching file: {e}")
             return []
 
-    def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 5, user_config: dict = None) -> List[Dict[str, Any]]:
         """
         Hybrid Search + Graph Expansion + Query Augmentation
         """
         try:
             # 1. Augment Query
             # We expand the user's query to include technical synonyms
-            augmented_query = self._augment_query(query)
+            augmented_query = self._augment_query(query, user_config=user_config)
             if augmented_query != query:
                 print(f"🔹 Augmented Query: {augmented_query}")
 
@@ -73,11 +73,10 @@ class GraphRetriever:
             self.logger.error(f"Search error: {e}")
             return []
         
-    def _augment_query(self, user_query: str) -> str:
+    def _augment_query(self, user_query: str, user_config: dict = None) -> str:
         """Uses LLM to expand short queries into technical search terms."""
         # Simple heuristic: don't augment if it looks like a direct file path or very specific code
-        if "/" in user_query or "." in user_query:
-            return user_query
+        if "/" in user_query or "." in user_query: return user_query
 
         system_prompt = (
             "You are a query optimizer for a semantic code search engine.\n"
@@ -88,7 +87,7 @@ class GraphRetriever:
         
         user_prompt = f"User Question: {user_query}\n\nAugmented Search Query:"
         
-        suggestion = get_llm_completion(system_prompt, user_prompt, temperature=0.3, reasoning_enabled=True)
+        suggestion = get_llm_completion(system_prompt, user_prompt, temperature=0.3, reasoning_enabled=True, user_config=user_config)
         return suggestion.strip() if suggestion else user_query
 
     def _expand_graph(self, initial_hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

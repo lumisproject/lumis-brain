@@ -13,7 +13,7 @@ class AnswerGenerator:
         self.enable_multi_turn = enable_multi_turn
         self.logger = logging.getLogger(__name__)
 
-    def generate(self, query: str, collected_elements: List[Dict[str, Any]], repo_structure: str = None, history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+    def generate(self, query: str, collected_elements: List[Dict[str, Any]], repo_structure: str = None, history: List[Dict[str, str]] = None, user_config: Dict = None) -> Dict[str, Any]:
         self.logger.info("Generating answer")
         
         try:
@@ -108,7 +108,7 @@ Symbol Mappings:
             )
             
             # 5. Execute
-            raw_response = get_llm_completion(system_prompt, user_prompt)
+            raw_response = get_llm_completion(system_prompt, user_prompt, user_config=user_config)
             
             if not raw_response:
                 raise ValueError("Received empty response from the LLM.")

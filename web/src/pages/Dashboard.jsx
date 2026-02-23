@@ -6,6 +6,7 @@ import ReactMarkdown from 'react-markdown'
 export default function Dashboard() {
   const navigate = useNavigate()
 
+  // --- UI & Data State ---
   const [appState, setAppState] = useState('LOADING') 
   const [session, setSession] = useState(null)
   const [projectData, setProjectData] = useState(null)
@@ -18,6 +19,22 @@ export default function Dashboard() {
   const [chatMode, setChatMode] = useState('single-turn') 
   const [reasoning, setReasoning] = useState(true) 
   const bottomRef = useRef(null)
+
+  // --- User LLM Settings State ---
+  const [showSettings, setShowSettings] = useState(false)
+  // NEW: Toggle for default settings
+  const [useDefault, setUseDefault] = useState(localStorage.getItem('lumis_use_default') !== 'false')
+  const [provider, setProvider] = useState(localStorage.getItem('lumis_provider') || 'openrouter')
+  const [apiKey, setApiKey] = useState(localStorage.getItem('lumis_api_key') || '')
+  const [selectedModel, setSelectedModel] = useState(localStorage.getItem('lumis_model') || 'stepfun/step-3.5-flash:free')
+
+  // Persist settings to localStorage
+  useEffect(() => {
+    localStorage.setItem('lumis_use_default', useDefault)
+    localStorage.setItem('lumis_provider', provider)
+    localStorage.setItem('lumis_api_key', apiKey)
+    localStorage.setItem('lumis_model', selectedModel)
+  }, [useDefault, provider, apiKey, selectedModel])
 
   // 1. Boot: Check Session and Load Project
   useEffect(() => {
@@ -34,12 +51,11 @@ export default function Dashboard() {
         try {
             const res = await fetch(`http://localhost:5000/api/ingest/status/${p.id}`)
             const statusData = await res.json()
-            // Catching both cases for the sync wizard redirection
             if (['starting', 'processing', 'PROCESSING', 'STARTING'].includes(statusData.status)) {
                 navigate(`/syncing?project_id=${p.id}`)
                 return
             }
-        } catch (e) {}
+        } catch (e) { console.error("Status check failed") }
 
         fetchRisks(p.id)
       } else {
@@ -57,7 +73,7 @@ export default function Dashboard() {
     } catch(e) { console.error("Risk fetch error", e) }
   }
 
-  // 2. The Watcher: Handles thought logs and completion trigger
+  // 2. The Watcher: Polling for background sync completion and AI thoughts
   useEffect(() => {
     if (!projectData?.id) return
 
@@ -65,9 +81,11 @@ export default function Dashboard() {
       try {
         const res = await fetch(`http://localhost:5000/api/ingest/status/${projectData.id}`)
         const data = await res.json()
+        
         if (['PROCESSING', 'STARTING'].includes(data.status)) {
              navigate(`/syncing?project_id=${projectData.id}`)
         }
+
         if (chatLoading && data.logs && data.logs.length > 0) {
           const lastThought = data.logs.filter(l => l.includes('🧠') || l.includes('🤔')).pop()
           if (lastThought) {
@@ -77,20 +95,17 @@ export default function Dashboard() {
           }
         }
 
-        // AUTO-REFRESH UI when a background sync finishes
         if (data.status === 'completed') {
             const { data: freshProject } = await supabase.from('projects').select('*').eq('id', projectData.id).maybeSingle();
             if (freshProject) setProjectData(freshProject);
-
             fetchRisks(projectData.id);
             clearInterval(interval); 
         }
-
       } catch (e) { console.error("Poll error", e) }
     }, 1500)
 
     return () => clearInterval(interval)
-  }, [chatLoading, projectData])
+  }, [chatLoading, projectData, navigate])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -125,6 +140,13 @@ export default function Dashboard() {
     setMessages(prev => [...prev, { role: 'lumis', content: '...', isThinking: true }])
     
     try {
+      // --- NEW: If useDefault is true, send an empty config so backend uses .env defaults ---
+      const activeConfig = useDefault ? {} : {
+        provider: provider,
+        api_key: apiKey,
+        model: selectedModel
+      }
+
       const res = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -132,7 +154,8 @@ export default function Dashboard() {
             project_id: projectData.id, 
             query: userMsg.content,
             mode: chatMode,
-            reasoning: reasoning 
+            reasoning: reasoning,
+            user_config: activeConfig
         })
       })
       const data = await res.json()
@@ -155,29 +178,39 @@ export default function Dashboard() {
     setTimeout(() => setCopied(false), 2000);
   }
 
+  // --- Loading View ---
   if (appState === 'LOADING') return <div className="page-center"><div className="spinner"></div></div>
 
+  // --- Welcome/Onboarding View ---
   if (appState === 'NO_PROJECT') {
     return (
       <div className="page-center">
         <div className="auth-card" style={{ maxWidth: '440px' }}>
           <div className="auth-header">
             <h1>Activate Workspace</h1>
-            <p>Connect a GitHub repository to begin.</p>
+            <p>Connect a GitHub repository to begin deep analysis.</p>
           </div>
           <input className="input-field" value={repoUrl} onChange={e => setRepoUrl(e.target.value)} placeholder="https://github.com/username/repo" />
           <button onClick={handleIngest} className="btn btn-primary" style={{width:'100%', marginTop:'1.25rem'}}>Begin Deep Analysis</button>
+          
+          <div style={{ marginTop: '1.5rem', borderTop: '1px solid #eee', paddingTop: '1rem' }}>
+             <button className="btn-text" onClick={() => setShowSettings(true)}>⚙️ Configure AI Settings</button>
+          </div>
         </div>
+
+        {showSettings && <SettingsModal />}
       </div>
     )
   }
 
+  // --- Main Dashboard View ---
   return (
     <div className="app-shell">
+      {showSettings && <SettingsModal />}
+
       <aside className="sidebar">
         <div className="sidebar-header"><div className="brand">Lumis Intelligence</div></div>
         <div className="sidebar-content">
-          
           <div className="section-title">Active Repository</div>
           <div className="info-card" style={{ padding: '16px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
@@ -193,9 +226,7 @@ export default function Dashboard() {
               </div>
 
               <div style={{ borderTop: '1px solid #e4e4e7', paddingTop: '10px', marginTop: '10px' }}>
-                <div style={{ fontSize: '0.7rem', color: '#71717a', marginBottom: '4px', fontWeight: 600, letterSpacing: '0.02em' }}>
-                    LAST COMMIT
-                </div>
+                <div style={{ fontSize: '0.7rem', color: '#71717a', marginBottom: '4px', fontWeight: 600, letterSpacing: '0.02em' }}>LAST COMMIT</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: projectData?.last_commit ? '#10b981' : '#f59e0b' }}></div>
                     <code style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#09090b', background: '#f4f4f5', padding: '2px 6px', borderRadius: '4px' }}>
@@ -214,13 +245,9 @@ export default function Dashboard() {
                 <div key={i} className="risk-card">
                     <div className="risk-header">
                       <span className="risk-type">{r.risk_type}</span>
-                      <span className={`risk-badge ${r.severity?.toLowerCase() || 'medium'}`}>
-                        {r.severity}
-                      </span>
+                      <span className={`risk-badge ${r.severity?.toLowerCase() || 'medium'}`}>{r.severity}</span>
                     </div>
-                    <div className="risk-desc">
-                      <ReactMarkdown>{r.description}</ReactMarkdown>
-                    </div>
+                    <div className="risk-desc"><ReactMarkdown>{r.description}</ReactMarkdown></div>
                 </div>
               ))
             )}
@@ -228,18 +255,9 @@ export default function Dashboard() {
 
           <div className="section-title">Webhook Integration</div>
           <div className="info-card" style={{ padding: '16px' }}>
-            <div style={{ fontSize: '0.75rem', color: '#71717a', lineHeight: '1.5', marginBottom: '12px' }}>
-              Sync automatically on every push:
-              <ol style={{ paddingLeft: '1.2rem', margin: '8px 0' }}>
-                <li>GitHub <strong>Settings</strong> → <strong>Webhooks</strong></li>
-                <li>Add URL below as <strong>Payload URL</strong></li>
-                <li>Type: <code>application/json</code></li>
-              </ol>
-            </div>
             <div style={{ display: 'flex', gap: '8px' }}>
               <input 
-                className="input-field" 
-                readOnly 
+                className="input-field" readOnly 
                 value={`https://unsparing-kaley-unmodest.ngrok-free.dev/api/webhook/${session?.user?.id}/${projectData?.id}`} 
                 style={{ fontSize: '0.7rem', padding: '6px 8px', background: '#f9fafb' }}
               />
@@ -248,7 +266,6 @@ export default function Dashboard() {
               </button>
             </div>
           </div>
-          
         </div>
         <div className="sidebar-footer">
            <button className="btn-text" onClick={() => supabase.auth.signOut().then(() => navigate('/'))}>Logout</button>
@@ -260,21 +277,22 @@ export default function Dashboard() {
             <span>Digital Twin Terminal</span>
             <div style={{display:'flex', gap:'8px', alignItems:'center'}}>
                 <button 
+                    onClick={() => setShowSettings(true)}
+                    style={{ background: 'transparent', border: '1px solid #e4e4e7', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer', fontWeight: 600 }}
+                >⚙️ Model Settings</button>
+
+                <button 
                     onClick={() => setReasoning(!reasoning)}
                     style={{
                         background: reasoning ? '#8b5cf6' : '#f4f4f5',
                         color: reasoning ? 'white' : '#71717a',
-                        border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer',
-                        fontWeight: 600, transition: 'all 0.2s', marginRight: '8px'
+                        border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer', fontWeight: 600
                     }}
-                    title="Enable Chain-of-Thought (Slower but smarter)"
-                >
-                    {reasoning ? '✨ Reasoning ON' : 'Reasoning OFF'}
-                </button>
+                >{reasoning ? '✨ Reasoning ON' : 'Reasoning OFF'}</button>
 
                 <div style={{display:'flex', gap:'4px', background:'#f4f4f5', padding:'4px', borderRadius:'6px'}}>
-                    <button onClick={() => setChatMode('multi-turn')} style={{ background: chatMode === 'multi-turn' ? 'white' : 'transparent', border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer', boxShadow: chatMode === 'multi-turn' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none', fontWeight: chatMode === 'multi-turn' ? 600 : 400 }}>Multi-Turn</button>
-                    <button onClick={() => setChatMode('single-turn')} style={{ background: chatMode === 'single-turn' ? 'white' : 'transparent', border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer', boxShadow: chatMode === 'single-turn' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none', fontWeight: chatMode === 'single-turn' ? 600 : 400 }}>Single-Turn</button>
+                    <button onClick={() => setChatMode('multi-turn')} style={{ background: chatMode === 'multi-turn' ? 'white' : 'transparent', border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer', fontWeight: chatMode === 'multi-turn' ? 600 : 400 }}>Multi-Turn</button>
+                    <button onClick={() => setChatMode('single-turn')} style={{ background: chatMode === 'single-turn' ? 'white' : 'transparent', border: 'none', padding: '4px 12px', borderRadius: '4px', fontSize:'0.8rem', cursor:'pointer', fontWeight: chatMode === 'single-turn' ? 600 : 400 }}>Single-Turn</button>
                 </div>
             </div>
         </div>
@@ -286,16 +304,10 @@ export default function Dashboard() {
                 <div className={`message-bubble ${m.isThinking ? 'thinking' : ''}`}>
                   {m.isThinking ? (
                     <div className="dots-container" style={{display:'flex', flexDirection:'column', alignItems:'flex-start'}}>
-                      <span className="thinking-text" style={{fontSize:'0.8rem', marginBottom:'4px'}}>
-                        {m.thinkingText || "Exploring codebase..."}
-                      </span>
-                      <div style={{display:'flex', gap:'4px'}}>
-                        <div className="dot"></div><div className="dot"></div><div className="dot"></div>
-                      </div>
+                      <span className="thinking-text" style={{fontSize:'0.8rem', marginBottom:'4px'}}>{m.thinkingText || "Exploring codebase..."}</span>
+                      <div style={{display:'flex', gap:'4px'}}><div className="dot"></div><div className="dot"></div><div className="dot"></div></div>
                     </div>
-                  ) : (
-                    <ReactMarkdown>{m.content}</ReactMarkdown>
-                  )}
+                  ) : <ReactMarkdown>{m.content}</ReactMarkdown>}
                 </div>
               </div>
             ))}
@@ -312,4 +324,56 @@ export default function Dashboard() {
       </main>
     </div>
   )
+
+  // Sub-component for Settings Modal
+  function SettingsModal() {
+    return (
+      <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="auth-card" style={{ maxWidth: '400px', textAlign: 'left' }}>
+          <h2 style={{ marginTop: 0, marginBottom: '1rem' }}>LLM Settings</h2>
+          
+          <div style={{ marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <input 
+              type="checkbox" 
+              id="useDefault" 
+              checked={useDefault} 
+              onChange={e => setUseDefault(e.target.checked)} 
+              style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+            />
+            <label htmlFor="useDefault" style={{ fontSize: '0.9rem', cursor: 'pointer', fontWeight: 500 }}>
+              Use System Default Settings
+            </label>
+          </div>
+
+          {!useDefault && (
+            <>
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px' }}>AI Provider</label>
+                <select className="input-field" value={provider} onChange={e => setProvider(e.target.value)}>
+                  <option value="openrouter">OpenRouter (Unified)</option>
+                  <option value="openai">Direct OpenAI</option>
+                  <option value="anthropic">Direct Anthropic</option>
+                  <option value="google">Direct Google Gemini</option>
+                </select>
+              </div>
+
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px' }}>API Key</label>
+                <input type="password" placeholder="Enter your key..." className="input-field" value={apiKey} onChange={e => setApiKey(e.target.value)} />
+              </div>
+
+              <div style={{ marginBottom: '1.5rem' }}>
+                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: '4px' }}>Model ID</label>
+                <input type="text" className="input-field" placeholder="e.g. stepfun/step-3.5-flash:free" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} />
+              </div>
+            </>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+            <button className="btn btn-primary" onClick={() => setShowSettings(false)}>Save & Close</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 }
