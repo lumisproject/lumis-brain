@@ -48,3 +48,4 @@ pytest-cov
 
 
 supabase
+requests

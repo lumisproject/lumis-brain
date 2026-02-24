@@ -18,11 +18,11 @@ export default function Dashboard() {
   const [copied, setCopied] = useState(false)
   const [chatMode, setChatMode] = useState('single-turn') 
   const [reasoning, setReasoning] = useState(true) 
+  const [jiraConnected, setJiraConnected] = useState(false)
   const bottomRef = useRef(null)
 
   // --- User LLM Settings State ---
   const [showSettings, setShowSettings] = useState(false)
-  // NEW: Toggle for default settings
   const [useDefault, setUseDefault] = useState(localStorage.getItem('lumis_use_default') !== 'false')
   const [provider, setProvider] = useState(localStorage.getItem('lumis_provider') || 'openrouter')
   const [apiKey, setApiKey] = useState(localStorage.getItem('lumis_api_key') || '')
@@ -36,12 +36,39 @@ export default function Dashboard() {
     localStorage.setItem('lumis_model', selectedModel)
   }, [useDefault, provider, apiKey, selectedModel])
 
+  const handleDisconnectJira = async () => {
+    if (!window.confirm("Are you sure you want to disconnect Jira?")) return;
+
+    try {
+      const res = await fetch(`http://localhost:5000/api/jira/disconnect/${session.user.id}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setJiraConnected(false);
+        alert("Jira disconnected.");
+      }
+    } catch (e) {
+      console.error("Disconnect failed", e);
+      alert("Failed to disconnect Jira.");
+    }
+  };
+
   // 1. Boot: Check Session and Load Project
   useEffect(() => {
     const boot = async () => {
       const { data: { session: s } } = await supabase.auth.getSession()
       if (!s) { navigate('/login'); return; }
       setSession(s)
+
+      // Check Jira Connection Status
+      const { data: jiraToken } = await supabase
+        .from('jira_tokens')
+        .select('user_id')
+        .eq('user_id', s.user.id)
+        .maybeSingle()
+      
+      setJiraConnected(!!jiraToken)
 
       const { data: p } = await supabase.from('projects').select('*').eq('user_id', s.user.id).maybeSingle()
       if (p) {
@@ -82,7 +109,7 @@ export default function Dashboard() {
         const res = await fetch(`http://localhost:5000/api/ingest/status/${projectData.id}`)
         const data = await res.json()
         
-        if (['PROCESSING', 'STARTING'].includes(data.status)) {
+        if (['PROCESSING', 'STARTING', 'PROGRESSING'].includes(data.status)) {
              navigate(`/syncing?project_id=${projectData.id}`)
         }
 
@@ -140,7 +167,6 @@ export default function Dashboard() {
     setMessages(prev => [...prev, { role: 'lumis', content: '...', isThinking: true }])
     
     try {
-      // --- NEW: If useDefault is true, send an empty config so backend uses .env defaults ---
       const activeConfig = useDefault ? {} : {
         provider: provider,
         api_key: apiKey,
@@ -176,6 +202,11 @@ export default function Dashboard() {
     navigator.clipboard.writeText(webhookUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  // Handle Jira OAuth connection
+  const handleConnectJira = () => {
+    window.location.href = `http://localhost:5000/auth/jira/connect?state=${session.user.id}`;
   }
 
   // --- Loading View ---
@@ -234,6 +265,37 @@ export default function Dashboard() {
                     </code>
                 </div>
               </div>
+          </div>
+
+          {/* New Integrations Section for Jira */}
+          <div className="section-title">Integrations</div>
+          <div className="info-card" style={{ padding: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: '0.9rem', color: '#09090b' }}>Jira Software</div>
+                <div style={{ fontSize: '0.75rem', color: jiraConnected ? '#10b981' : '#ef4444', fontWeight: 500 }}>
+                  {jiraConnected ? 'Connected ✅' : 'Not Connected ❌'}
+                </div>
+              </div>
+              {/* Toggle between Connect and Disconnect buttons */}
+              {jiraConnected ? (
+                <button 
+                  onClick={handleDisconnectJira} 
+                  className="btn btn-outline" 
+                  style={{ padding: '4px 8px', fontSize: '0.7rem', color: '#ef4444', borderColor: '#fecaca' }}
+                >
+                  Disconnect
+                </button>
+              ) : (
+                <button 
+                  onClick={handleConnectJira} 
+                  className="btn btn-outline" 
+                  style={{ padding: '4px 8px', fontSize: '0.7rem' }}
+                >
+                  Connect
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="section-title">Risk Monitor</div>

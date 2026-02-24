@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 from src.services import embed_model, generate_footprint
 from src.db_client import supabase, save_memory_units, save_edges, get_unit_footprint
-from src.indexing.parser import AdvancedCodeParser
+from src.parser import AdvancedCodeParser
 from src.risk_engine import calculate_predictive_risks
 
 # --- FASTCODE OPTIMIZATION: BATCH GIT BLAME ---

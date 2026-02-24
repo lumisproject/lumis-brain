@@ -2,12 +2,17 @@ import json
 import re
 import logging
 import ast
+import requests
+from typing import List, Dict, Any, Optional
 from langchain_core.messages import BaseMessage
-from typing import List, Dict, Any
 from src.services import get_llm_completion
 from src.retriever import GraphRetriever
 from src.answer_generator import AnswerGenerator
 from src.query_processor import QueryProcessor
+
+# --- INTEGRATED JIRA IMPORTS ---
+from src.jira_auth import get_valid_token
+from src.jira_client import get_accessible_resources, jira_headers
 
 class LumisAgent:
     def __init__(self, project_id: str, mode: str = "single-turn", max_steps: int = 4):
@@ -21,9 +26,16 @@ class LumisAgent:
         self.conversation_history: List[BaseMessage] = []
         self.logger = logging.getLogger(__name__)
 
-    def ask(self, user_query: str, reasoning_enabled: bool = True) -> str:
-        print(self.mode)
-        print("Reasoning: ",reasoning_enabled)
+    def ask(self, user_query: str, reasoning_enabled: bool = True, user_id: str = None) -> str:
+        """
+        Main entry point for user queries. Intercepts Jira keywords to trigger 
+        task cross-referencing, otherwise proceeds with code analysis.
+        """
+        # 1. Detect Jira-related intent
+        jira_keywords = ["task", "work", "next", "jira", "assigned", "todo", "to-do"]
+        if any(word in user_query.lower() for word in jira_keywords):
+            return self._handle_jira_tasks(user_query, user_id)
+        
         if self.mode == "single-turn":
             self.conversation_history = []
 
@@ -33,18 +45,15 @@ class LumisAgent:
         
         print(f"\n🤖 LUMIS: {user_query}")
 
-        # --- FIX 1: Process query ONCE before the loop ---
+        # Process query once before the autonomous scouting loop
         processed_query = self.query_processor.process(user_query, self.conversation_history, user_config=self.user_config)
         print(f"🎯 Intent: {processed_query.intent}")
         if processed_query.pseudocode_hints:
             print(f"💡 Pseudocode Hint Generated")
 
         for step in range(self.max_steps):
-            
-            # --- FIX 2: Pass 'processed_query' object instead of raw string ---
             prompt = self._build_step_prompt(processed_query, scratchpad)
             
-            # 1. Get LLM response
             response_text = get_llm_completion(
                 self._get_system_prompt(), 
                 prompt, 
@@ -52,9 +61,7 @@ class LumisAgent:
                 user_config=self.user_config
             )
             
-            # 2. Robust Parsing
             data = self._parse_response(response_text, fallback_query=user_query)
-            
             thought = data.get("thought", "Analyzing...")
             action = data.get("action")
             confidence = data.get("confidence", 0)
@@ -68,10 +75,9 @@ class LumisAgent:
                 print("⚠️ No action generated. Stopping.")
                 break
             
-            # OPTIONAL: You can inject the rewritten query here if the agent chose 'search_code'
-            # but usually it's better to let the agent see the hint in the prompt and decide.
-            obs = self._execute_tool(action, data.get("action_input"), collected_elements, scratchpad,processed_query)
-            if action == "list_files": repo_structure = obs 
+            obs = self._execute_tool(action, data.get("action_input"), collected_elements, scratchpad, processed_query)
+            if action == "list_files": 
+                repo_structure = obs 
 
         result = self.generator.generate(
             query=user_query, 
@@ -83,18 +89,74 @@ class LumisAgent:
         self._update_history(user_query, result['answer'])
         return result['answer']
 
-    # --- FIX 3: Update this helper to inject the hints into the LLM's context ---
+    def _handle_jira_tasks(self, query: str, user_id: str) -> str:
+        """
+        Interactive tool to fetch active Jira issues and cross-reference them 
+        with relevant files in the current repository.
+        """
+        if not user_id:
+            return "I need your user ID to access your Jira workspace. Please ensure you are logged in."
+        
+        token = get_valid_token(user_id)
+        if not token:
+            return "Your Jira account is not connected. Please go to the Dashboard to link your Jira workspace."
+
+        try:
+            # 1. Get Jira Workspace ID
+            resources = get_accessible_resources(token)
+            if not resources:
+                return "No Jira projects found linked to your account."
+            cloud_id = resources[0]["id"]
+            
+            # 2. Fetch Issues assigned to the user that are not "Done"
+            jql = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+            search_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search"
+            res = requests.get(search_url, headers=jira_headers(token), params={"jql": jql, "maxResults": 3})
+            
+            issues = res.json().get("issues", [])
+            if not issues:
+                return "You currently have no active tasks assigned in Jira. Great job!"
+
+            # 3. Use GraphRetriever to find relevant code clues based on task summaries
+            task_summaries = []
+            code_context = []
+
+            for issue in issues:
+                summary = issue['fields']['summary']
+                key = issue['key']
+                task_summaries.append(f"[{key}] {summary}")
+                
+                relevant_code = self.retriever.search(summary)
+                for code in relevant_code:
+                    code_context.append(f"Task {key} might involve {code['file_path']} (found logic related to '{summary}')")
+
+            # 4. Final synthesis
+            prompt = (
+                f"User asked: '{query}'\n\n"
+                f"ACTIVE JIRA TASKS:\n" + "\n".join(task_summaries) + "\n\n"
+                f"CODEBASE CLUES:\n" + "\n".join(code_context) + "\n\n"
+                "Explain what the user should work on next and point them to the specific files in the repository."
+            )
+            
+            return get_llm_completion(
+                "You are Lumis, the Digital Twin Agent. You help developers bridge the gap between tasks and code.",
+                prompt,
+                user_config=self.user_config
+            )
+
+        except Exception as e:
+            self.logger.error(f"Jira Agent Error: {e}")
+            return f"I encountered an error while checking Jira: {str(e)}"
+
     def _build_step_prompt(self, processed_query, scratchpad):
         history_text = ""
         if self.conversation_history and len(self.conversation_history) > 0:
             recent_msgs = self.conversation_history[-6:]
             history_text = "CONVERSATION HISTORY:\n" + "\n".join(
-                [f"{m['role'].upper()}: {m['content']}" for m in recent_msgs]
+                [f"{m['role'].upper() if isinstance(m, dict) else m.type.upper()}: {m['content'] if isinstance(m, dict) else m.content}" for m in recent_msgs]
             ) + "\n\n"
             
         progress = "\n".join([f"Action: {s['action']} -> {s['observation']}" for s in scratchpad])
-        
-        # Inject the processor insights
         query_context = f"USER QUERY: {processed_query.original}"
         
         insights = []
@@ -104,44 +166,26 @@ class LumisAgent:
              insights.append(f"Implementation Hint:\n{processed_query.pseudocode_hints}")
              
         insight_text = "\n\n".join(insights)
-
         return f"{history_text}{query_context}\n\n{insight_text}\n\nPROGRESS:\n{progress}\n\nNEXT JSON:"
 
     def _parse_response(self, text: str, fallback_query: str = "") -> Dict[str, Any]:
-        """
-        Robustly extracts JSON. If extraction fails, creates a fallback action 
-        based on the text content to keep the agent alive.
-        """
         if not text: 
             return self._create_fallback(fallback_query, "Empty response from LLM")
-
-        # 1. Try to find JSON block
         clean_text = text.replace("```json", "").replace("```", "").strip()
         start_idx = clean_text.find('{')
         end_idx = clean_text.rfind('}')
-
         if start_idx != -1 and end_idx != -1:
             try:
-                json_str = clean_text[start_idx:end_idx + 1]
-                # Fix common LLM syntax errors before parsing
-                json_str = self._sanitize_json_string(json_str)
+                json_str = self._sanitize_json_string(clean_text[start_idx:end_idx + 1])
                 return json.loads(json_str)
-            except Exception as e:
-                print(f"⚠️ JSON extract failed: {e}")
-        
-        # 2. Python-dict Fallback (handling single quotes)
+            except Exception: pass
         try:
             if start_idx != -1 and end_idx != -1:
                 return ast.literal_eval(clean_text[start_idx:end_idx + 1])
-        except:
-            pass
-
-        # 3. Ultimate Fallback: Treat the text as a thought and force a search
-        # This fixes "I'll help you find..." causing a crash.
+        except: pass
         return self._create_fallback(fallback_query, text[:200])
 
     def _create_fallback(self, query: str, thought_snippet: str) -> Dict[str, Any]:
-        """Creates a default search action when parsing fails."""
         return {
             "thought": f"Parsing failed. Falling back to search. Raw: {thought_snippet}...",
             "action": "search_code",
@@ -150,14 +194,9 @@ class LumisAgent:
         }
 
     def _sanitize_json_string(self, json_str: str) -> str:
-        """Fixes common JSON format errors."""
-        # Remove comments
         json_str = re.sub(r'//.*?\n', '\n', json_str)
-        # Fix trailing commas
         json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
         return json_str
-
-    # In src/agent.py -> LumisAgent class
 
     def _execute_tool(self, action, inp, collected, scratchpad, processed_query=None):
         obs = "No results."
@@ -165,7 +204,6 @@ class LumisAgent:
             if action == "list_files":
                 files = self.retriever.list_all_files()
                 obs = f"Repo contains {len(files)} files. First 50: {', '.join(files[:50])}"
-                
             elif action == "read_file":
                 path = str(inp).strip()
                 data = self.retriever.fetch_file_content(path)
@@ -173,69 +211,134 @@ class LumisAgent:
                     collected.extend(data)
                     obs = f"Successfully read {path}."
                 else:
-                    obs = f"Error: File {path} not found in database. Check spelling or use list_files."
-                    
+                    obs = f"Error: File {path} not found."
             elif action == "search_code":
                 search_input = str(inp)
-                
-                # If we have a high-quality rewritten query from the processor, 
-                # we combine it with the agent's input to maximize recall.
                 if processed_query and processed_query.rewritten_query:
-                    # Logic: "Agent's specific term" + "Processor's technical keywords"
                     search_input = f"{search_input} {processed_query.rewritten_query}"
-                
-                # If there are pseudocode hints (for implementation tasks), add them too
                 if processed_query and processed_query.pseudocode_hints:
                     search_input += f" {processed_query.pseudocode_hints}"
-                
-                print(f"🔎 Executing Enhanced Search: {search_input[:100]}...")
-
                 data = self.retriever.search(search_input, user_config=self.user_config)
-                
                 if data:
                     collected.extend(data)
                     found_files = list(set([d['file_path'] for d in data]))
                     obs = f"Found {len(data)} matches in: {', '.join(found_files[:10])}"
                 else:
-                    obs = f"No results found for '{inp}'. Try broader keywords."
-                    
+                    obs = f"No results found. Try broader keywords."
         except Exception as e:
             obs = f"Tool Error: {str(e)}"
-            
         scratchpad.append({"thought": "System Result", "action": f"{action}({inp})", "observation": obs})
         return obs
 
     def _get_system_prompt(self) -> str:
-            return (
-                "You are Lumis, a 'Scouting-First' code analysis agent.\n"
-                "Your goal is to answer user queries with PRECISE code evidence.\n\n"
-                
-                "*** CORE WORKFLOW ***\n"
-                "1. SCOUT: Use `list_files` or `search_code` to find RELEVANT FILE PATHS. Do not read files randomly.\n"
-                "2. VERIFY: Use the provided 'Search Hint' or 'Pseudocode' to refine your search if initial results are poor.\n"
-                "3. READ: Only call `read_file` when you are 80%+ sure a file contains the answer.\n"
-                "4. ANSWER: Call `final_answer` once you have the code snippets in your context.\n\n"
-                
-                "*** TOOL USAGE ***\n"
-                "- list_files(): Call this FIRST if you don't know the directory structure.\n"
-                "- search_code(query): Semantic search for logic/concepts. Use specific technical terms.\n"
-                "- read_file(path): Loads the FULL content. Expensive! Use sparingly on targeted files.\n"
-                "- final_answer: Delivers the response to the user.\n\n"
-                
-                "*** RESPONSE FORMAT (Strict JSON) ***\n"
-                "{\n"
-                "  \"thought\": \"I see the user wants to find auth logic. The file structure shows a 'src/auth' folder...\",\n"
-                "  \"confidence\": <0-100>,\n"
-                "  \"action\": \"<tool_name>\",\n"
-                "  \"action_input\": \"<argument>\"\n"
-                "}\n\n"
-                "*** CRITICAL OUTPUT RULES ***\n"
-                "1. DO NOT output any conversational text, introductions, or explanations.\n"
-                "2. Output ONLY the raw JSON object. Do not wrap it in markdown code blocks.\n"
-                "3. Ensure the JSON is valid (no trailing commas, double quotes for keys)."
-            )
+        return (
+            "You are Lumis, a 'Scouting-First' code analysis agent.\n"
+            "Your goal is to answer user queries with PRECISE code evidence.\n\n"
+            "1. SCOUT: Use `list_files` or `search_code` to find RELEVANT FILE PATHS.\n"
+            "2. READ: Only call `read_file` when you are 80%+ sure a file contains the answer.\n"
+            "3. ANSWER: Call `final_answer` once you have the code snippets in your context."
+        )
 
     def _update_history(self, q, a):
         if self.mode == "multi-turn":
             self.conversation_history.append({"role": "user", "content": q})
             self.conversation_history.append({"role": "assistant", "content": a})
+
+# --- STANDALONE JIRA FULFILLMENT ANALYZER (BACKGROUND JOB) ---
+
+def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -> Dict:
+    """
+    Standalone background AI job to compare code diffs against Jira task requirements.
+    This is triggered by webhooks and uses the centralized LLM services.
+    """
+    summary = issue.get("fields", {}).get("summary", "No Summary")
+    description = issue.get("fields", {}).get("description", "No Description")
+    
+    system_prompt = """
+    You are a pragmatic, flexible, and experienced Technical Lead. Your job is to evaluate if a developer's code commit satisfies their active Jira task.
+
+    EVALUATION RULES:
+    1. Focus on Intent: Be flexible. If the code implements the core feature or resolves the main issue described in the task, consider it complete. Do not demand pixel-perfect adherence to every minor sub-bullet point unless it is critical.
+    2. Benefit of the Doubt: If the code looks like a reasonable and functional implementation of the feature, assume it works as intended.
+
+    STATUS DEFINITIONS:
+    - "COMPLETE": The core functionality of the task is implemented. (This will move the ticket to Done).
+    - "PARTIAL": The code is clearly just a minor "Work In Progress" update or only tackles a small fraction of the task.
+    - "NONE": The code is completely unrelated to the task.
+
+    FOLLOW-UP TASKS CREATION (STRICT):
+    - DO NOT create follow-up tasks for incomplete requirements of the current task. 
+    - If the code only partially completes the task, simply mark it "PARTIAL", list the missing requirements in your summary, and leave the follow_up_tasks array EMPTY. 
+    - The developer will push another commit to finish the current task.
+    - ONLY create follow-up tasks for entirely new, out-of-scope bugs, major security flaws, or technical debt (like "Refactor this later") discovered in the code. Keep the board clean.
+
+    JSON OUTPUT FORMAT:
+    Return a JSON object with the following structure:
+    {
+      "fulfillment_status": "COMPLETE" | "PARTIAL" | "NONE",
+      "summary": "A friendly 2-3 sentence summary of what was achieved.",
+      "identified_risks": [
+        {
+          "risk_type": "INCOMPLETE_FEATURE" | "SECURITY_FLAW" | "BUG",
+          "severity": "High" | "Medium" | "Low",
+          "description": "Brief explanation of what is missing or broken.",
+          "affected_units": ["filename.py", "function_name"]
+        }
+      ]
+    }
+    - If the task is fully complete and has no issues, leave "identified_risks" as an empty list [].
+    """
+    
+    prompt = f"""
+    JIRA TASK SUMMARY: {summary}
+    JIRA TASK DESCRIPTION: {description}
+    CODE CHANGES (DIFF): {code_diff}
+    
+    Respond strictly in JSON format with:
+    1. "status": "COMPLETE" if the code changes fully satisfy the Jira task, otherwise "INCOMPLETE".
+    2. "summary": A professional explanation of your decision for the developer.
+    3. "new_tasks": A list of objects with "title" and "description" for any missing features or bugs found.
+    """
+    
+    try:
+        response_text = get_llm_completion(system_prompt, prompt, reasoning_enabled=True, user_config=user_config)
+        # Robustly extract JSON block
+        clean_json = response_text.strip().replace('```json', '').replace('```', '')
+        start_idx = clean_json.find('{')
+        end_idx = clean_json.rfind('}')
+        if start_idx != -1 and end_idx != -1:
+            return json.loads(clean_json[start_idx:end_idx + 1])
+        return json.loads(clean_json)
+    except Exception as e:
+        print(f"AI Engine Error: {e}")
+        return {"status": "INCOMPLETE", "summary": f"AI analysis failed: {str(e)}", "new_tasks": []}
+
+def match_task_to_commit(commit_message: str, issues: List[Dict]) -> Optional[Dict]:
+    """Uses AI to determine if a commit message matches one of the active Jira tasks."""
+    if not issues: return None
+
+    # Prepare a list of candidate tasks for the AI
+    candidates = "\n".join([f"- [{i['key']}] {i['fields']['summary']}" for i in issues])
+    
+    system_prompt = "You are a Technical Lead. Your job is to match a developer's commit message to their active Jira task."
+    user_prompt = f"""
+    COMMIT MESSAGE: "{commit_message}"
+    
+    ACTIVE TASKS:
+    {candidates}
+    
+    Identify which task this commit likely belongs to. 
+    If there is a clear match, output ONLY the Task ID (e.g. PROJ-123).
+    If none of the tasks match, output "NONE".
+    """
+
+    try:
+        response = get_llm_completion(system_prompt, user_prompt, temperature=0.1)
+        match_id = response.strip().upper()
+        
+        if "NONE" in match_id: return None
+        
+        # Return the actual issue object from the list
+        return next((i for i in issues if i['key'] in match_id), None)
+    except Exception:
+        return None
