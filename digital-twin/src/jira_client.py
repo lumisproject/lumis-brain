@@ -80,7 +80,17 @@ def create_issue(cloud_id: str, project_key: str, summary: str, description: str
             "issuetype": {"name": "Task"}
         }
     }
-    requests.post(url, headers=jira_headers(access_token), json=payload).raise_for_status()
+    res = requests.post(url, headers=jira_headers(access_token), json=payload)
+    res.raise_for_status()
+    return res.json()  # Returns the new ticket info so we can transition it
+
+def get_projects(cloud_id: str, access_token: str):
+    """Fetches the projects to find the Project Key when the board has no active tasks."""
+    url = f"{Config.JIRA_API_BASE}/ex/jira/{cloud_id}/rest/api/3/project"
+    response = requests.get(url, headers=jira_headers(access_token))
+    if response.status_code == 200:
+        return response.json()
+    return []
 
 def get_active_issues(cloud_id: str, access_token: str):
     """Fetches active tasks using the new Jira JQL Search API."""
