@@ -283,7 +283,17 @@ class AdvancedCodeParser:
                 elif curr.type == "import_from_statement":
                     mod_node = curr.child_by_field_name('module_name')
                     mod_name = content[mod_node.start_byte:mod_node.end_byte].decode('utf-8') if mod_node else "."
-                    imports.append(ImportInfo(module=mod_name, names=[], is_from=True, source_line=curr.start_point.row))
+                    
+                    # --- FIXED: Extract specific imported names ---
+                    raw_text = content[curr.start_byte:curr.end_byte].decode('utf-8')
+                    names = []
+                    if " import " in raw_text:
+                        names_part = raw_text.split(" import ", 1)[1]
+                        # Clean up parenthesis and whitespace (e.g., from x import (a, b))
+                        names_part = names_part.replace('(', '').replace(')', '')
+                        names = [n.strip() for n in names_part.split(",") if n.strip()]
+                    
+                    imports.append(ImportInfo(module=mod_name, names=names, is_from=True, source_line=curr.start_point.row))
 
             # --- JS / TS / TSX ---
             elif lang in ["javascript", "typescript", "tsx"]:

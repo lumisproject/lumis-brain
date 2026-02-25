@@ -34,7 +34,9 @@ class LumisAgent:
         # 1. Detect Jira-related intent
         jira_keywords = ["task", "work", "next", "jira", "assigned", "todo", "to-do"]
         if any(word in user_query.lower() for word in jira_keywords):
-            return self._handle_jira_tasks(user_query, user_id)
+            jira_response = self._handle_jira_tasks(user_query, user_id)
+            if jira_response:
+                return jira_response
         
         if self.mode == "single-turn":
             self.conversation_history = []
@@ -95,17 +97,17 @@ class LumisAgent:
         with relevant files in the current repository.
         """
         if not user_id:
-            return "I need your user ID to access your Jira workspace. Please ensure you are logged in."
+            return None
         
         token = get_valid_token(user_id)
         if not token:
-            return "Your Jira account is not connected. Please go to the Dashboard to link your Jira workspace."
+            return None
 
         try:
             # 1. Get Jira Workspace ID
             resources = get_accessible_resources(token)
             if not resources:
-                return "No Jira projects found linked to your account."
+                return None
             cloud_id = resources[0]["id"]
             
             # 2. Fetch Issues assigned to the user that are not "Done"
@@ -115,7 +117,7 @@ class LumisAgent:
             
             issues = res.json().get("issues", [])
             if not issues:
-                return "You currently have no active tasks assigned in Jira. Great job!"
+                return None
 
             # 3. Use GraphRetriever to find relevant code clues based on task summaries
             task_summaries = []
@@ -269,11 +271,10 @@ def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -
     FOLLOW-UP TASKS CREATION (STRICT):
     - DO NOT create follow-up tasks for incomplete requirements of the current task. 
     - If the code only partially completes the task, simply mark it "PARTIAL", list the missing requirements in your summary, and leave the follow_up_tasks array EMPTY. 
-    - The developer will push another commit to finish the current task.
-    - ONLY create follow-up tasks for entirely new, out-of-scope bugs, major security flaws, or technical debt (like "Refactor this later") discovered in the code. Keep the board clean.
+    - ONLY create follow-up tasks for entirely new, out-of-scope bugs, major security flaws, or technical debt discovered in the code.
 
-    JSON OUTPUT FORMAT:
-    Return a JSON object with the following structure:
+    JSON OUTPUT FORMAT (STRICT):
+    Return a JSON object with EXACTLY the following structure:
     {
       "fulfillment_status": "COMPLETE" | "PARTIAL" | "NONE",
       "summary": "A friendly 2-3 sentence summary of what was achieved.",
@@ -284,9 +285,15 @@ def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -
           "description": "Brief explanation of what is missing or broken.",
           "affected_units": ["filename.py", "function_name"]
         }
+      ],
+      "follow_up_tasks": [
+        {
+          "title": "Short title of new issue",
+          "description": "Description of the out-of-scope issue found"
+        }
       ]
     }
-    - If the task is fully complete and has no issues, leave "identified_risks" as an empty list [].
+    - If the task is fully complete and has no risks, leave "identified_risks" and "follow_up_tasks" as empty arrays [].
     """
     
     prompt = f"""
@@ -294,10 +301,7 @@ def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -
     JIRA TASK DESCRIPTION: {description}
     CODE CHANGES (DIFF): {code_diff}
     
-    Respond strictly in JSON format with:
-    1. "status": "COMPLETE" if the code changes fully satisfy the Jira task, otherwise "INCOMPLETE".
-    2. "summary": A professional explanation of your decision for the developer.
-    3. "new_tasks": A list of objects with "title" and "description" for any missing features or bugs found.
+    Analyze the commit and respond STRICTLY in the JSON format defined in your instructions. Do not change the JSON keys.
     """
     
     try:
@@ -311,7 +315,7 @@ def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -
         return json.loads(clean_json)
     except Exception as e:
         print(f"AI Engine Error: {e}")
-        return {"status": "INCOMPLETE", "summary": f"AI analysis failed: {str(e)}", "new_tasks": []}
+        return {"fulfillment_status": "PARTIAL", "summary": f"AI analysis failed: {str(e)}", "identified_risks": [], "follow_up_tasks": []}
 
 def match_task_to_commit(commit_message: str, issues: List[Dict]) -> Optional[Dict]:
     """Uses AI to determine if a commit message matches one of the active Jira tasks."""
@@ -319,6 +323,10 @@ def match_task_to_commit(commit_message: str, issues: List[Dict]) -> Optional[Di
 
     # Prepare a list of candidate tasks for the AI
     candidates = "\n".join([f"- [{i['key']}] {i['fields']['summary']}" for i in issues])
+
+    print(f"\n--- DEBUG: ACTIVE TASKS FED TO AI ---")
+    print(candidates)
+    print(f"-------------------------------------\n")
     
     system_prompt = "You are a Technical Lead. Your job is to match a developer's commit message to their active Jira task."
     user_prompt = f"""
@@ -327,9 +335,10 @@ def match_task_to_commit(commit_message: str, issues: List[Dict]) -> Optional[Di
     ACTIVE TASKS:
     {candidates}
     
-    Identify which task this commit likely belongs to. 
-    If there is a clear match, output ONLY the Task ID (e.g. PROJ-123).
-    If none of the tasks match, output "NONE".
+    Analyze the commit message and match it to the most relevant task.
+    Output ONLY the exact Task ID from inside the brackets (e.g., PROJ-123) of the matching task.
+    Do NOT output the summary or any other text. 
+    If absolutely no tasks are relevant, output exactly NONE.
     """
 
     try:
