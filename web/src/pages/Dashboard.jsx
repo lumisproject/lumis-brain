@@ -167,10 +167,11 @@ export default function Dashboard() {
     setMessages(prev => [...prev, { role: 'lumis', content: '...', isThinking: true }])
     
     try {
-      const activeConfig = useDefault ? {} : {
+      const activeConfig = useDefault ? { user_id: session.user.id } : {
         provider: provider,
         api_key: apiKey,
-        model: selectedModel
+        model: selectedModel,
+        user_id: session.user.id // <-- Add the user ID here
       }
 
       const res = await fetch('http://localhost:5000/api/chat', {

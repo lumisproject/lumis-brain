@@ -34,7 +34,9 @@ class LumisAgent:
         # 1. Detect Jira-related intent
         jira_keywords = ["task", "work", "next", "jira", "assigned", "todo", "to-do"]
         if any(word in user_query.lower() for word in jira_keywords):
-            return self._handle_jira_tasks(user_query, user_id)
+            jira_response = self._handle_jira_tasks(user_query, user_id)
+            if jira_response:
+                return jira_response
         
         if self.mode == "single-turn":
             self.conversation_history = []
@@ -95,17 +97,17 @@ class LumisAgent:
         with relevant files in the current repository.
         """
         if not user_id:
-            return "I need your user ID to access your Jira workspace. Please ensure you are logged in."
+            return None
         
         token = get_valid_token(user_id)
         if not token:
-            return "Your Jira account is not connected. Please go to the Dashboard to link your Jira workspace."
+            return None
 
         try:
             # 1. Get Jira Workspace ID
             resources = get_accessible_resources(token)
             if not resources:
-                return "No Jira projects found linked to your account."
+                return None
             cloud_id = resources[0]["id"]
             
             # 2. Fetch Issues assigned to the user that are not "Done"
@@ -115,7 +117,7 @@ class LumisAgent:
             
             issues = res.json().get("issues", [])
             if not issues:
-                return "You currently have no active tasks assigned in Jira. Great job!"
+                return None
 
             # 3. Use GraphRetriever to find relevant code clues based on task summaries
             task_summaries = []

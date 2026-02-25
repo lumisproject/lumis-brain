@@ -99,10 +99,30 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     current_scan_identifiers.append(clean_id)
 
                     # 3. COLLECT EDGES FOR BULK INSERT
+                    # 3. COLLECT EDGES FOR BULK INSERT
                     if block.calls: 
                         edges_to_insert.extend([{"project_id": project_id, "source_unit_name": clean_id, "target_unit_name": t, "edge_type": "calls"} for t in block.calls])
+                    
+                    # --- FIXED: Insert edges for modules AND specific imported functions ---
                     if block.imports: 
-                        edges_to_insert.extend([{"project_id": project_id, "source_unit_name": clean_id, "target_unit_name": i.module, "edge_type": "imports"} for i in block.imports])
+                        for i in block.imports:
+                            # 1. Add edge for the module itself (e.g., legacy_billing)
+                            edges_to_insert.append({
+                                "project_id": project_id, 
+                                "source_unit_name": clean_id, 
+                                "target_unit_name": i.module, 
+                                "edge_type": "imports"
+                            })
+                            # 2. Add edges for specific imported names (e.g., calculate_tax_and_fees)
+                            for name in i.names:
+                                if name and name != "*":
+                                    edges_to_insert.append({
+                                        "project_id": project_id, 
+                                        "source_unit_name": clean_id, 
+                                        "target_unit_name": name, 
+                                        "edge_type": "imports"
+                                    })
+                                    
                     if block.bases: 
                         edges_to_insert.extend([{"project_id": project_id, "source_unit_name": clean_id, "target_unit_name": b, "edge_type": "inherits"} for b in block.bases])
 
@@ -179,7 +199,7 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
         if progress_callback: progress_callback("DONE", "Fast Sync Complete. Running Intelligence in Background...")
         
         # Push the heavy predictive logic to the background so the user gets an instant 'Success' response
-        asyncio.create_task(calculate_predictive_risks(project_id))
+        await calculate_predictive_risks(project_id)
 
     except Exception as e:
         print(f"CRITICAL ERROR: {e}")

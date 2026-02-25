@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import inspect
 import requests
 from typing import Dict, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
@@ -7,10 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # Core Modules
+
 from src.agent import LumisAgent, analyze_fulfillment, match_task_to_commit
 from src.ingestor import ingest_repo
 from src.db_client import supabase, get_project_risks
 from src.config import Config
+from src.risk_engine import calculate_predictive_risks
 
 # Jira Integration Modules
 from src.jira_auth import jira_auth_router, get_valid_token
@@ -170,7 +173,7 @@ async def process_webhook_logic(payload: dict, access_token: str, project_id: st
             except Exception as e:
                 logger.error(f"❌ Failed to auto-create ticket for rogue commit: {e}")
             
-            continue # Move on to the next commit in the payload
+            continue
 
         # 5. EXISTING LOGIC: Handled matched issues
         task_id = matched_issue["key"]
@@ -235,6 +238,28 @@ async def process_webhook_logic(payload: dict, access_token: str, project_id: st
 
     logger.info("--- Jira Sync Cycle Complete ---")
 
+async def run_ingestion_pipeline(repo_url: str, project_id: str, user_id: str):
+    """Safely runs ingestion first, then triggers the predictive risk engine."""
+    def progress_cb(t, m):
+        update_progress(project_id, t, m)
+        
+    try:
+        # 1. Run Code Ingestion (safely handles both sync and async ingest_repo)
+        if inspect.iscoroutinefunction(ingest_repo):
+            await ingest_repo(repo_url=repo_url, project_id=project_id, user_id=user_id, progress_callback=progress_cb)
+        else:
+            await asyncio.to_thread(ingest_repo, repo_url=repo_url, project_id=project_id, user_id=user_id, progress_callback=progress_cb)
+        
+        # 2. Trigger the Legacy Risk Engine
+        progress_cb("RISK_ANALYSIS", "Running Legacy Code Conflict Analysis...")
+        risks_found = await calculate_predictive_risks(project_id)
+        logger.info(f"Risk analysis complete for {project_id}. Found {risks_found} legacy conflicts.")
+        
+        progress_cb("DONE", "Sync complete.")
+    except Exception as e:
+        logger.error(f"Ingestion Pipeline Error: {e}")
+        progress_cb("Error", f"Pipeline failed: {str(e)}")
+
 # --- ENDPOINTS ---
 
 @app.post("/api/webhook/{user_id}/{project_id}")
@@ -276,11 +301,10 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
 
             # SUB-TASK 1: Trigger Digital Twin Code Ingestion
             background_tasks.add_task(
-                ingest_repo,
+                run_ingestion_pipeline,
                 repo_url=repo_url,
                 project_id=project_id,
-                user_id=user_id,
-                progress_callback=lambda t, m: update_progress(project_id, t, m)
+                user_id=user_id
             )
 
             # SUB-TASK 2: Trigger Jira Task Synchronization
@@ -346,11 +370,10 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
         ingestion_state[project_id] = {"status": "starting", "logs": ["Request received..."], "step": "Init"}
 
         background_tasks.add_task(
-            ingest_repo,
+            run_ingestion_pipeline,
             repo_url=req.repo_url,
             project_id=project_id,
-            user_id=req.user_id,
-            progress_callback=lambda t, m: update_progress(project_id, t, m)
+            user_id=req.user_id
         )
         
         return {"project_id": project_id, "status": "started"}
