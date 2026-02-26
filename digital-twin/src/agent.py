@@ -238,7 +238,14 @@ class LumisAgent:
             "Your goal is to answer user queries with PRECISE code evidence.\n\n"
             "1. SCOUT: Use `list_files` or `search_code` to find RELEVANT FILE PATHS.\n"
             "2. READ: Only call `read_file` when you are 80%+ sure a file contains the answer.\n"
-            "3. ANSWER: Call `final_answer` once you have the code snippets in your context."
+            "3. ANSWER: Call `final_answer` once you have the code snippets in your context.\n\n"
+            "IMPORTANT: You MUST respond ONLY with a valid JSON object matching this exact schema. Do not include markdown formatting or outside text:\n"
+            "{\n"
+            '  "thought": "Your reasoning for the next step",\n'
+            '  "action": "list_files | read_file | search_code | final_answer",\n'
+            '  "action_input": "The input string for the chosen tool",\n'
+            '  "confidence": 85\n'
+            "}"
         )
 
     def _update_history(self, q, a):
