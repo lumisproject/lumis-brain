@@ -167,6 +167,29 @@
     animation: fade-in-up 0.5s ease-out 0.3s forwards;
     opacity: 0;
   }
+
+  /* Premium Backgrounds */
+  .bg-mesh {
+    background: 
+      radial-gradient(at 0% 0%, hsla(220, 90%, 56%, 0.05) 0, transparent 50%),
+      radial-gradient(at 100% 100%, hsla(260, 80%, 60%, 0.05) 0, transparent 50%);
+  }
+
+  .grain {
+    position: relative;
+  }
+  
+  .grain::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background-image: url("https://grainy-gradients.vercel.app/noise.svg");
+    opacity: 0.03;
+    pointer-events: none;
+    z-index: 100;
+  }
 }
 
 /* Custom scrollbar */

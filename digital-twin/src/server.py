@@ -54,7 +54,7 @@ class ChatRequest(BaseModel):
     project_id: str
     query: str
     mode: str = "single-turn"
-    reasoning: bool = True
+    reasoning: bool = False
     user_config: Optional[Dict] = None
 
 class IngestRequest(BaseModel):

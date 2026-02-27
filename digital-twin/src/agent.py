@@ -26,7 +26,7 @@ class LumisAgent:
         self.conversation_history: List[BaseMessage] = []
         self.logger = logging.getLogger(__name__)
 
-    def ask(self, user_query: str, reasoning_enabled: bool = True, user_id: str = None) -> str:
+    def ask(self, user_query: str, reasoning_enabled: bool = False, user_id: str = None) -> str:
         """
         Main entry point for user queries. Intercepts Jira keywords to trigger 
         task cross-referencing, otherwise proceeds with code analysis.
@@ -46,6 +46,7 @@ class LumisAgent:
         repo_structure = None 
         
         print(f"\n🤖 LUMIS: {user_query}")
+        print(f"Reasoning Enabled: {reasoning_enabled}")
 
         # Process query once before the autonomous scouting loop
         processed_query = self.query_processor.process(user_query, self.conversation_history, user_config=self.user_config)
@@ -312,7 +313,7 @@ def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -
     """
     
     try:
-        response_text = get_llm_completion(system_prompt, prompt, reasoning_enabled=True, user_config=user_config)
+        response_text = get_llm_completion(system_prompt, prompt, reasoning_enabled=False, user_config=user_config)
         # Robustly extract JSON block
         clean_json = response_text.strip().replace('```json', '').replace('```', '')
         start_idx = clean_json.find('{')
