@@ -16,7 +16,7 @@ class Config:
     JIRA_CLIENT_ID = os.getenv("JIRA_CLIENT_ID")
     JIRA_CLIENT_SECRET = os.getenv("JIRA_CLIENT_SECRET")
     JIRA_REDIRECT_URI = os.getenv("JIRA_REDIRECT_URI", "http://localhost:5000/auth/jira/callback")
-    JIRA_REDIRECT=os.getenv("JIRA_REDIRECT", "http://localhost:5173/auth/jira/callback")
+    JIRA_REDIRECT=os.getenv("JIRA_REDIRECT", "http://localhost:8080/auth/jira/callback")
     
     JIRA_AUTH_URL = "https://auth.atlassian.com/authorize"
     JIRA_TOKEN_URL = "https://auth.atlassian.com/oauth/token"

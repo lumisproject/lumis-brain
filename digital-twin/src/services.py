@@ -28,7 +28,7 @@ def get_embedding(text: str):
 
 
 # 2. LLM INFRASTRUCTURE.
-def get_llm(temperature=0.2, user_config=None, reasoning_enabled=True):
+def get_llm(temperature=0.2, user_config=None, reasoning_enabled=False):
     user_config = user_config or {}
 
     provider = user_config.get("provider") or Config.DEFAULT_LLM_PROVIDER
@@ -71,7 +71,7 @@ def get_llm(temperature=0.2, user_config=None, reasoning_enabled=True):
     raise ValueError(f"Provider {provider} is not supported yet.")
 
 
-def get_llm_completion(system_prompt, user_prompt, temperature=0.2, reasoning_enabled=True, user_config=None):
+def get_llm_completion(system_prompt, user_prompt, temperature=0.2, reasoning_enabled=False, user_config=None):
     try:
         # 1. Dynamically get the LLM based on user overrides or defaults
         llm = get_llm(

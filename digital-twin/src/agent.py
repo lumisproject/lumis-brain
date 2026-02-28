@@ -26,7 +26,7 @@ class LumisAgent:
         self.conversation_history: List[BaseMessage] = []
         self.logger = logging.getLogger(__name__)
 
-    def ask(self, user_query: str, reasoning_enabled: bool = True, user_id: str = None) -> str:
+    def ask(self, user_query: str, reasoning_enabled: bool = False, user_id: str = None) -> str:
         """
         Main entry point for user queries. Intercepts Jira keywords to trigger 
         task cross-referencing, otherwise proceeds with code analysis.
@@ -46,6 +46,7 @@ class LumisAgent:
         repo_structure = None 
         
         print(f"\n🤖 LUMIS: {user_query}")
+        print(f"Reasoning Enabled: {reasoning_enabled}")
 
         # Process query once before the autonomous scouting loop
         processed_query = self.query_processor.process(user_query, self.conversation_history, user_config=self.user_config)
@@ -238,7 +239,14 @@ class LumisAgent:
             "Your goal is to answer user queries with PRECISE code evidence.\n\n"
             "1. SCOUT: Use `list_files` or `search_code` to find RELEVANT FILE PATHS.\n"
             "2. READ: Only call `read_file` when you are 80%+ sure a file contains the answer.\n"
-            "3. ANSWER: Call `final_answer` once you have the code snippets in your context."
+            "3. ANSWER: Call `final_answer` once you have the code snippets in your context.\n\n"
+            "IMPORTANT: You MUST respond ONLY with a valid JSON object matching this exact schema. Do not include markdown formatting or outside text:\n"
+            "{\n"
+            '  "thought": "Your reasoning for the next step",\n'
+            '  "action": "list_files | read_file | search_code | final_answer",\n'
+            '  "action_input": "The input string for the chosen tool",\n'
+            '  "confidence": 85\n'
+            "}"
         )
 
     def _update_history(self, q, a):
@@ -305,7 +313,7 @@ def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -
     """
     
     try:
-        response_text = get_llm_completion(system_prompt, prompt, reasoning_enabled=True, user_config=user_config)
+        response_text = get_llm_completion(system_prompt, prompt, reasoning_enabled=False, user_config=user_config)
         # Robustly extract JSON block
         clean_json = response_text.strip().replace('```json', '').replace('```', '')
         start_idx = clean_json.find('{')
