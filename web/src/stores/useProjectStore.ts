@@ -29,20 +29,24 @@ interface ProjectState {
   project: Project | null;
   risks: Risk[];
   jiraConnected: boolean;
+  notionConnected: boolean; // <-- NEW
   ingestionStatus: IngestionStatus | null;
   loading: boolean;
   fetchProject: (userId: string) => Promise<void>;
   fetchJiraStatus: (userId: string) => Promise<void>;
+  fetchNotionStatus: (userId: string) => Promise<void>; // <-- NEW
   fetchRisks: (projectId: string) => Promise<void>;
   startIngestion: (userId: string, repoUrl: string) => Promise<string | null>;
   pollIngestionStatus: (projectId: string) => Promise<IngestionStatus | null>;
   disconnectJira: (userId: string) => Promise<void>;
+  disconnectNotion: (userId: string) => Promise<void>; // <-- NEW
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: null,
   risks: [],
   jiraConnected: false,
+  notionConnected: false, // <-- NEW
   ingestionStatus: null,
   loading: false,
 
@@ -65,6 +69,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({ jiraConnected: !!data });
   },
 
+  // --- NEW NOTION LOGIC ---
+  fetchNotionStatus: async (userId) => {
+    const { data } = await supabase
+      .from('notion_tokens')
+      .select('user_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    set({ notionConnected: !!data });
+  },
+
   fetchRisks: async (projectId) => {
     try {
       const res = await fetch(`${API_BASE}/api/risks/${projectId}`);
@@ -73,10 +87,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
       const normalizedRisks = apiRisks.map((risk) => {
         const severityRaw = String(risk.severity ?? 'medium').toLowerCase();
-        const severity =
-          severityRaw === 'high' || severityRaw === 'low' || severityRaw === 'medium'
-            ? severityRaw
-            : 'medium';
+        
+        // Add the 'as "high" | "medium" | "low"' assertion here:
+        const severity = (
+          severityRaw === 'high' || severityRaw === 'low' || severityRaw === 'medium' 
+            ? severityRaw 
+            : 'medium'
+        ) as 'high' | 'medium' | 'low';
 
         return {
           id: risk.id ?? `${risk.project_id ?? 'project'}-${risk.risk_type ?? 'risk'}`,
@@ -122,6 +139,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     try {
       await fetch(`${API_BASE}/api/jira/disconnect/${userId}`, { method: 'DELETE' });
       set({ jiraConnected: false });
+    } catch { /* ignore */ }
+  },
+
+  // --- NEW NOTION LOGIC ---
+  disconnectNotion: async (userId) => {
+    try {
+      await fetch(`${API_BASE}/api/notion/disconnect/${userId}`, { method: 'DELETE' });
+      set({ notionConnected: false });
     } catch { /* ignore */ }
   },
 }));

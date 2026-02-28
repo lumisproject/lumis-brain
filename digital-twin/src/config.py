@@ -29,3 +29,8 @@ class Config:
 
     # Github settings
     GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+    # Notion settings
+    NOTION_CLIENT_ID = os.getenv("NOTION_CLIENT_ID")
+    NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET")
+    NOTION_REDIRECT_URI = os.getenv("NOTION_REDIRECT_URI")
