@@ -431,6 +431,49 @@ async def get_user_jira_projects(user_id: str):
     projects = get_projects(cloud_id, access_token)
     return [{"key": p["key"], "name": p["name"]} for p in projects]
 
+
+@app.delete("/api/projects/{user_id}/{project_id}")
+async def delete_project(user_id: str, project_id: str):
+    """
+    Permanently deletes a project and all associated analysis data for a given user.
+    """
+    try:
+        # Look up by project_id first, then verify ownership.
+        res = (
+            supabase.table("projects")
+            .select("id, user_id")
+            .eq("id", project_id)
+            .maybe_single()
+            .execute()
+        )
+
+        if not res or not res.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        db_project = res.data
+        if db_project.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        # Delete associated analysis data
+        supabase.table("memory_units").delete().eq("project_id", project_id).execute()
+        supabase.table("graph_edges").delete().eq("project_id", project_id).execute()
+        supabase.table("project_risks").delete().eq("project_id", project_id).execute()
+
+        # Delete the project record itself
+        supabase.table("projects").delete().eq("id", project_id).eq("user_id", user_id).execute()
+
+        # Clear in-memory state
+        active_agents.pop(project_id, None)
+        ingestion_state.pop(project_id, None)
+
+        return {"status": "deleted"}
+    except HTTPException:
+        # Re-raise known HTTP errors
+        raise
+    except Exception as e:
+        logger.error(f"Project delete failed for {project_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete project")
+
 @app.post("/api/projects/{project_id}/jira-mapping")
 async def update_jira_mapping(project_id: str, payload: dict):
     jira_key = payload.get("jira_project_key")

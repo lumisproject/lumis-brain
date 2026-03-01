@@ -26,38 +26,52 @@ interface IngestionStatus {
 }
 
 interface ProjectState {
+  projects: Project[];
   project: Project | null;
   risks: Risk[];
   jiraConnected: boolean;
-  notionConnected: boolean; // <-- NEW
+  notionConnected: boolean;
   ingestionStatus: IngestionStatus | null;
   loading: boolean;
-  fetchProject: (userId: string) => Promise<void>;
+  fetchProjects: (userId: string) => Promise<void>;
+  selectProject: (projectId: string) => void;
   fetchJiraStatus: (userId: string) => Promise<void>;
-  fetchNotionStatus: (userId: string) => Promise<void>; // <-- NEW
+  fetchNotionStatus: (userId: string) => Promise<void>;
   fetchRisks: (projectId: string) => Promise<void>;
   startIngestion: (userId: string, repoUrl: string) => Promise<string | null>;
   pollIngestionStatus: (projectId: string) => Promise<IngestionStatus | null>;
   disconnectJira: (userId: string) => Promise<void>;
-  disconnectNotion: (userId: string) => Promise<void>; // <-- NEW
+  disconnectNotion: (userId: string) => Promise<void>;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
+  projects: [],
   project: null,
   risks: [],
   jiraConnected: false,
-  notionConnected: false, // <-- NEW
+  notionConnected: false,
   ingestionStatus: null,
   loading: false,
 
-  fetchProject: async (userId) => {
+  fetchProjects: async (userId) => {
     set({ loading: true });
     const { data } = await supabase
       .from('projects')
       .select('*')
       .eq('user_id', userId)
-      .maybeSingle();
-    set({ project: data, loading: false });
+      .order('created_at', { ascending: false });
+    const projects = (data ?? []) as Project[];
+    const current = get().project;
+    const active = current && projects.some((p) => p.id === current.id)
+      ? current
+      : projects[0] ?? null;
+    set({ projects, project: active, loading: false });
+  },
+
+  selectProject: (projectId) => {
+    const { projects } = get();
+    const next = projects.find((p) => p.id === projectId) ?? null;
+    set({ project: next, risks: [] });
   },
 
   fetchJiraStatus: async (userId) => {

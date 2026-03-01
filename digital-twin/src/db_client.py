@@ -115,3 +115,9 @@ def update_unit_risk_scores(updates):
             .eq("project_id", update["project_id"])\
             .eq("unit_name", update["unit_name"])\
             .execute()
+
+def delete_previous_risks(project_id):
+    supabase.table("project_risks")\
+        .delete().eq("project_id", project_id)\
+        .eq("risk_type", "Legacy Conflict")\
+        .execute()

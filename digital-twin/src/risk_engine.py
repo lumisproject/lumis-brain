@@ -1,13 +1,13 @@
 import asyncio
 from datetime import datetime, timezone
 import networkx as nx
-from src.db_client import get_project_data, save_risk_alerts, update_unit_risk_scores
+from src.db_client import get_project_data, save_risk_alerts, update_unit_risk_scores, delete_previous_risks
 from src.services import get_llm_completion
 
 async def analyze_grouped_conflict_with_llm(target_name, target_unit, sources):
     """
-    Uses the LLM to determine if the interaction between multiple new units and 
-    a single legacy code unit is dangerous (Bottleneck Analysis).
+    Analyzes the interaction between multiple recently modified units and a single legacy code unit.
+    Determines if the recent changes might break assumptions in the legacy code, or if this legacy code is becoming a risky bottleneck.
     """
     system_prompt = (
         "You are a Senior Software Architect specializing in legacy modernization. "
@@ -40,7 +40,8 @@ async def analyze_grouped_conflict_with_llm(target_name, target_unit, sources):
 
 async def calculate_predictive_risks(project_id):
     print(f"Starting Grouped Risk Analysis for {project_id}...")
-    
+    # Delete previous risks
+    delete_previous_risks(project_id)
     # 1. Fetch Graph Data
     units, edges = get_project_data(project_id)
     if not units:
@@ -130,7 +131,7 @@ async def calculate_predictive_risks(project_id):
         sources = sorted(sources, key=lambda x: x["source_unit"]["age_days"])
         target_unit = unit_map[target]
         
-        print(f"Detected legacy bottleneck: {target} is being touched by {len(sources)} active units.")
+        print(f"Detected legacy conflict: {target} is being touched by {len(sources)} active units.")
         
         coro = analyze_grouped_conflict_with_llm(target, target_unit, sources)
         llm_coroutines.append(coro)
@@ -163,14 +164,14 @@ async def calculate_predictive_risks(project_id):
             affected_list = [target] + [s['source_key'] for s in sources]
             
             description = (
-                f"**Legacy Bottleneck:** The unit `{target}` (untouched for {det['target_age']} days) "
+                f"**Legacy Conflict:** The unit `{target}` (untouched for {det['target_age']} days) "
                 f"is being affected by recent changes in {len(sources)} active unit(s).\n\n"
                 f"**AI Analysis:** {analysis_result}"
             )
             
             risks.append({
                 "project_id": project_id,
-                "risk_type": "Legacy Bottleneck",
+                "risk_type": "Legacy Conflict",
                 "severity": severity, 
                 "description": description,
                 "affected_units": affected_list

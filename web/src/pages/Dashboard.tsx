@@ -6,6 +6,7 @@ import { useProjectStore } from '@/stores/useProjectStore';
 import { useChatStore } from '@/stores/useChatStore';
 import { ChatMessage } from '@/components/ChatMessage';
 import { RiskCard } from '@/components/RiskCard';
+import { ProjectSwitcher } from '@/components/ProjectSwitcher';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -84,7 +85,7 @@ const OnboardingCard = ({ userId }: { userId: string }) => {
 
 const DashboardContent = () => {
   const { user, signOut } = useUserStore();
-  const { project, risks, fetchProject, fetchRisks, startIngestion, loading } = useProjectStore();
+  const { project, risks, fetchProjects, fetchRisks, startIngestion, loading } = useProjectStore();
   const {
     messages,
     chatMode,
@@ -102,9 +103,9 @@ const DashboardContent = () => {
 
   useEffect(() => {
     if (userId) {
-      fetchProject(userId);
+      fetchProjects(userId);
     }
-  }, [userId, fetchProject]);
+  }, [userId, fetchProjects]);
 
   useEffect(() => {
     if (project?.id) {
@@ -168,6 +169,7 @@ const DashboardContent = () => {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <ProjectSwitcher />
           <div className="flex items-center gap-1 rounded-full border border-border bg-muted/30 px-3 py-1 mr-2">
             <div className="h-1.5 w-1.5 rounded-full bg-terminal-fg animate-pulse" />
             <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Engine Active</span>
