@@ -20,7 +20,7 @@ const features = [
   },
   {
     icon: Cpu,
-    title: 'Jira Intelligence',
+    title: 'Intelligent Tracking',
     description: 'Connect your project tracker. Lumis maps issues to code and surfaces actionable insights.'
   }];
 
