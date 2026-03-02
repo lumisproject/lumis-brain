@@ -60,7 +60,8 @@ export const ProjectSwitcher = () => {
     e.preventDefault();
     if (!project || !userId) return;
 
-    const expectedSlug = project.repo_url
+    // Update this to prioritize repo_name just like the UI does
+    const expectedSlug = project.repo_name || project.repo_url
       .replace(/^https?:\/\/github\.com\//, '')
       .replace(/\/$/, '');
 

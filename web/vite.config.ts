@@ -8,6 +8,8 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    // Add this line to allow your ngrok tunnel
+    allowedHosts: ["unsparing-kaley-unmodest.ngrok-free.dev"],
     hmr: {
       overlay: false,
     },
