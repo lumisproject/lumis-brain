@@ -15,10 +15,9 @@ from src.jira_auth import get_valid_token
 from src.jira_client import get_accessible_resources, jira_headers
 
 class LumisAgent:
-    def __init__(self, project_id: str, mode: str = "single-turn", max_steps: int = 4):
+    def __init__(self, project_id: str, max_steps: int = 4, user_config: Dict = None):
         self.project_id = project_id
-        self.mode = mode
-        self.user_config = None
+        self.user_config = user_config
         self.retriever = GraphRetriever(project_id)
         self.generator = AnswerGenerator(project_id)
         self.query_processor = QueryProcessor()
@@ -26,7 +25,7 @@ class LumisAgent:
         self.conversation_history: List[BaseMessage] = []
         self.logger = logging.getLogger(__name__)
 
-    def ask(self, user_query: str, reasoning_enabled: bool = False, user_id: str = None) -> str:
+    def ask(self, user_query: str) -> str:
         """
         Main entry point for user queries. Intercepts Jira keywords to trigger 
         task cross-referencing, otherwise proceeds with code analysis.
@@ -34,11 +33,13 @@ class LumisAgent:
         # 1. Detect Jira-related intent
         jira_keywords = ["task", "work", "next", "jira", "assigned", "todo", "to-do"]
         if any(word in user_query.lower() for word in jira_keywords):
-            jira_response = self._handle_jira_tasks(user_query, user_id)
+            jira_response = self._handle_jira_tasks(user_query)
             if jira_response:
                 return jira_response
         
-        if self.mode == "single-turn":
+        mode = self.user_config.get("mode", "single-turn")
+        
+        if mode == "single-turn":
             self.conversation_history = []
 
         scratchpad = []
@@ -46,7 +47,9 @@ class LumisAgent:
         repo_structure = None 
         
         print(f"\n🤖 LUMIS: {user_query}")
-        print(f"Reasoning Enabled: {reasoning_enabled}")
+        print(f"Reasoning Enabled: {self.user_config.get('reasoning_enabled', False)}")
+        print(f"LLM Provider: {self.user_config.get('provider', 'default')} | Model: {self.user_config.get('model', 'default')}\n")
+        print(f"--- Starting {'Multi-Turn' if mode == 'multi-turn' else 'Single-Turn'} Interaction ---\n")
 
         # Process query once before the autonomous scouting loop
         processed_query = self.query_processor.process(user_query, self.conversation_history, user_config=self.user_config)
@@ -55,12 +58,9 @@ class LumisAgent:
             print(f"💡 Pseudocode Hint Generated")
 
         for step in range(self.max_steps):
-            prompt = self._build_step_prompt(processed_query, scratchpad)
-            
             response_text = get_llm_completion(
                 self._get_system_prompt(), 
-                prompt, 
-                reasoning_enabled=reasoning_enabled,
+                self._build_step_prompt(processed_query, scratchpad),
                 user_config=self.user_config
             )
             
@@ -69,16 +69,13 @@ class LumisAgent:
             action = data.get("action")
             confidence = data.get("confidence", 0)
             
-            print(f"🤔 Step {step+1} ({confidence}%): {thought}")
+            print(f"🤔 Step {step+1} ({confidence}%, ({action})): {thought}")
 
             if confidence >= 95 or action == "final_answer":
                 break
-
-            if not action or action == "none": 
-                print("⚠️ No action generated. Stopping.")
-                break
             
             obs = self._execute_tool(action, data.get("action_input"), collected_elements, scratchpad, processed_query)
+            print(f"\n\n🔧 Executed {action} with input '{data.get('action_input')}'. Observation: {obs}\n\n")
             if action == "list_files": 
                 repo_structure = obs 
 
@@ -89,14 +86,16 @@ class LumisAgent:
             history=self.conversation_history,
             user_config=self.user_config
         )
-        self._update_history(user_query, result['answer'])
+        self._update_history(user_query, result['answer'], mode)
         return result['answer']
 
-    def _handle_jira_tasks(self, query: str, user_id: str) -> str:
+    def _handle_jira_tasks(self, query: str) -> str:
         """
         Interactive tool to fetch active Jira issues and cross-reference them 
         with relevant files in the current repository.
         """
+        user_id = self.user_config.get("user_id") if self.user_config else None
+
         if not user_id:
             return None
         
@@ -171,6 +170,7 @@ class LumisAgent:
         insight_text = "\n\n".join(insights)
         return f"{history_text}{query_context}\n\n{insight_text}\n\nPROGRESS:\n{progress}\n\nNEXT JSON:"
 
+    # To check later ⚠️️: This parsing logic is now duplicated in query_processor.py. Consider centralizing it in a utility module if it becomes more complex or is needed elsewhere.
     def _parse_response(self, text: str, fallback_query: str = "") -> Dict[str, Any]:
         if not text: 
             return self._create_fallback(fallback_query, "Empty response from LLM")
@@ -249,113 +249,111 @@ class LumisAgent:
             "}"
         )
 
-    def _update_history(self, q, a):
-        if self.mode == "multi-turn":
+    def _update_history(self, q, a, mode):
+        if mode == "multi-turn":
             self.conversation_history.append({"role": "user", "content": q})
             self.conversation_history.append({"role": "assistant", "content": a})
 
-# --- STANDALONE JIRA FULFILLMENT ANALYZER (BACKGROUND JOB) ---
-
-def analyze_fulfillment(issue: Dict, code_diff: str, user_config: Dict = None) -> Dict:
-    """
-    Standalone background AI job to compare code diffs against Jira task requirements.
-    This is triggered by webhooks and uses the centralized LLM services.
-    """
-    summary = issue.get("fields", {}).get("summary", "No Summary")
-    description = issue.get("fields", {}).get("description", "No Description")
-    
-    system_prompt = """
-    You are a pragmatic, flexible, and experienced Technical Lead. Your job is to evaluate if a developer's code commit satisfies their active Jira task.
-
-    EVALUATION RULES:
-    1. Focus on Intent: Be flexible. If the code implements the core feature or resolves the main issue described in the task, consider it complete. Do not demand pixel-perfect adherence to every minor sub-bullet point unless it is critical.
-    2. Benefit of the Doubt: If the code looks like a reasonable and functional implementation of the feature, assume it works as intended.
-
-    STATUS DEFINITIONS:
-    - "COMPLETE": The core functionality of the task is implemented. (This will move the ticket to Done).
-    - "PARTIAL": The code is clearly just a minor "Work In Progress" update or only tackles a small fraction of the task.
-    - "NONE": The code is completely unrelated to the task.
-
-    FOLLOW-UP TASKS CREATION (STRICT):
-    - DO NOT create follow-up tasks for incomplete requirements of the current task. 
-    - If the code only partially completes the task, simply mark it "PARTIAL", list the missing requirements in your summary, and leave the follow_up_tasks array EMPTY. 
-    - ONLY create follow-up tasks for entirely new, out-of-scope bugs, major security flaws, or technical debt discovered in the code.
-
-    JSON OUTPUT FORMAT (STRICT):
-    Return a JSON object with EXACTLY the following structure:
-    {
-      "fulfillment_status": "COMPLETE" | "PARTIAL" | "NONE",
-      "summary": "A friendly 2-3 sentence summary of what was achieved.",
-      "identified_risks": [
-        {
-          "risk_type": "INCOMPLETE_FEATURE" | "SECURITY_FLAW" | "BUG",
-          "severity": "High" | "Medium" | "Low",
-          "description": "Brief explanation of what is missing or broken.",
-          "affected_units": ["filename.py", "function_name"]
-        }
-      ],
-      "follow_up_tasks": [
-        {
-          "title": "Short title of new issue",
-          "description": "Description of the out-of-scope issue found"
-        }
-      ]
-    }
-    - If the task is fully complete and has no risks, leave "identified_risks" and "follow_up_tasks" as empty arrays [].
-    """
-    
-    prompt = f"""
-    JIRA TASK SUMMARY: {summary}
-    JIRA TASK DESCRIPTION: {description}
-    CODE CHANGES (DIFF): {code_diff}
-    
-    Analyze the commit and respond STRICTLY in the JSON format defined in your instructions. Do not change the JSON keys.
-    """
-    
-    try:
-        response_text = get_llm_completion(system_prompt, prompt, reasoning_enabled=False, user_config=user_config)
-        # Robustly extract JSON block
-        clean_json = response_text.strip().replace('```json', '').replace('```', '')
-        start_idx = clean_json.find('{')
-        end_idx = clean_json.rfind('}')
-        if start_idx != -1 and end_idx != -1:
-            return json.loads(clean_json[start_idx:end_idx + 1])
-        return json.loads(clean_json)
-    except Exception as e:
-        print(f"AI Engine Error: {e}")
-        return {"fulfillment_status": "PARTIAL", "summary": f"AI analysis failed: {str(e)}", "identified_risks": [], "follow_up_tasks": []}
-
-def match_task_to_commit(commit_message: str, issues: List[Dict]) -> Optional[Dict]:
-    """Uses AI to determine if a commit message matches one of the active Jira tasks."""
-    if not issues: return None
-
-    # Prepare a list of candidate tasks for the AI
-    candidates = "\n".join([f"- [{i['key']}] {i['fields']['summary']}" for i in issues])
-
-    print(f"\n--- DEBUG: ACTIVE TASKS FED TO AI ---")
-    print(candidates)
-    print(f"-------------------------------------\n")
-    
-    system_prompt = "You are a Technical Lead. Your job is to match a developer's commit message to their active Jira task."
-    user_prompt = f"""
-    COMMIT MESSAGE: "{commit_message}"
-    
-    ACTIVE TASKS:
-    {candidates}
-    
-    Analyze the commit message and match it to the most relevant task.
-    Output ONLY the exact Task ID from inside the brackets (e.g., PROJ-123) of the matching task.
-    Do NOT output the summary or any other text. 
-    If absolutely no tasks are relevant, output exactly NONE.
-    """
-
-    try:
-        response = get_llm_completion(system_prompt, user_prompt, temperature=0.1)
-        match_id = response.strip().upper()
+    def analyze_fulfillment(self, issue: Dict, code_diff: str) -> Dict:
+        """
+        Standalone background AI job to compare code diffs against Jira task requirements.
+        This is triggered by webhooks and uses the centralized LLM services.
+        """
+        summary = issue.get("fields", {}).get("summary", "No Summary")
+        description = issue.get("fields", {}).get("description", "No Description")
         
-        if "NONE" in match_id: return None
+        system_prompt = """
+        You are a pragmatic, flexible, and experienced Technical Lead. Your job is to evaluate if a developer's code commit satisfies their active Jira task.
+
+        EVALUATION RULES:
+        1. Focus on Intent: Be flexible. If the code implements the core feature or resolves the main issue described in the task, consider it complete. Do not demand pixel-perfect adherence to every minor sub-bullet point unless it is critical.
+        2. Benefit of the Doubt: If the code looks like a reasonable and functional implementation of the feature, assume it works as intended.
+
+        STATUS DEFINITIONS:
+        - "COMPLETE": The core functionality of the task is implemented. (This will move the ticket to Done).
+        - "PARTIAL": The code is clearly just a minor "Work In Progress" update or only tackles a small fraction of the task.
+        - "NONE": The code is completely unrelated to the task.
+
+        FOLLOW-UP TASKS CREATION (STRICT):
+        - DO NOT create follow-up tasks for incomplete requirements of the current task. 
+        - If the code only partially completes the task, simply mark it "PARTIAL", list the missing requirements in your summary, and leave the follow_up_tasks array EMPTY. 
+        - ONLY create follow-up tasks for entirely new, out-of-scope bugs, major security flaws, or technical debt discovered in the code.
+
+        JSON OUTPUT FORMAT (STRICT):
+        Return a JSON object with EXACTLY the following structure:
+        {
+        "fulfillment_status": "COMPLETE" | "PARTIAL" | "NONE",
+        "summary": "A friendly 2-3 sentence summary of what was achieved.",
+        "identified_risks": [
+            {
+            "risk_type": "INCOMPLETE_FEATURE" | "SECURITY_FLAW" | "BUG",
+            "severity": "High" | "Medium" | "Low",
+            "description": "Brief explanation of what is missing or broken.",
+            "affected_units": ["filename.py", "function_name"]
+            }
+        ],
+        "follow_up_tasks": [
+            {
+            "title": "Short title of new issue",
+            "description": "Description of the out-of-scope issue found"
+            }
+        ]
+        }
+        - If the task is fully complete and has no risks, leave "identified_risks" and "follow_up_tasks" as empty arrays [].
+        """
         
-        # Return the actual issue object from the list
-        return next((i for i in issues if i['key'] in match_id), None)
-    except Exception:
-        return None
+        prompt = f"""
+        JIRA TASK SUMMARY: {summary}
+        JIRA TASK DESCRIPTION: {description}
+        CODE CHANGES (DIFF): {code_diff}
+        
+        Analyze the commit and respond STRICTLY in the JSON format defined in your instructions. Do not change the JSON keys.
+        """
+        
+        try:
+            response_text = get_llm_completion(system_prompt, prompt, user_config=self.user_config)
+            # Robustly extract JSON block
+            clean_json = response_text.strip().replace('```json', '').replace('```', '')
+            start_idx = clean_json.find('{')
+            end_idx = clean_json.rfind('}')
+            if start_idx != -1 and end_idx != -1:
+                return json.loads(clean_json[start_idx:end_idx + 1])
+            return json.loads(clean_json)
+        except Exception as e:
+            print(f"AI Engine Error: {e}")
+            return {"fulfillment_status": "PARTIAL", "summary": f"AI analysis failed: {str(e)}", "identified_risks": [], "follow_up_tasks": []}
+
+    def match_task_to_commit(self, commit_message: str, issues: List[Dict]) -> Optional[Dict]:
+        """Uses AI to determine if a commit message matches one of the active Jira tasks."""
+        if not issues: return None
+
+        # Prepare a list of candidate tasks for the AI
+        candidates = "\n".join([f"- [{i['key']}] {i['fields']['summary']}" for i in issues])
+
+        print(f"\n--- DEBUG: ACTIVE TASKS FED TO AI ---")
+        print(candidates)
+        print(f"-------------------------------------\n")
+        
+        system_prompt = "You are a Technical Lead. Your job is to match a developer's commit message to their active Jira task."
+        user_prompt = f"""
+        COMMIT MESSAGE: "{commit_message}"
+        
+        ACTIVE TASKS:
+        {candidates}
+        
+        Analyze the commit message and match it to the most relevant task.
+        Output ONLY the exact Task ID from inside the brackets (e.g., PROJ-123) of the matching task.
+        Do NOT output the summary or any other text. 
+        If absolutely no tasks are relevant, output exactly NONE.
+        """
+
+        try:
+            response = get_llm_completion(system_prompt, user_prompt, user_config=self.user_config)
+            match_id = response.strip().upper()
+            
+            if "NONE" in match_id: return None
+            
+            # Return the actual issue object from the list
+            return next((i for i in issues if i['key'] in match_id), None)
+        except Exception:
+            return None

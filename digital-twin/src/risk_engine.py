@@ -4,7 +4,7 @@ import networkx as nx
 from src.db_client import get_project_data, save_risk_alerts, update_unit_risk_scores, delete_previous_risks
 from src.services import get_llm_completion
 
-async def analyze_grouped_conflict_with_llm(target_name, target_unit, sources):
+async def analyze_grouped_conflict_with_llm(target_name, target_unit, sources, user_config):
     """
     Analyzes the interaction between multiple recently modified units and a single legacy code unit.
     Determines if the recent changes might break assumptions in the legacy code, or if this legacy code is becoming a risky bottleneck.
@@ -34,11 +34,17 @@ async def analyze_grouped_conflict_with_llm(target_name, target_unit, sources):
     
     # Wrap synchronous LLM call to run in a separate thread
     loop = asyncio.get_running_loop()
-    analysis = await loop.run_in_executor(None, get_llm_completion, system_prompt, user_prompt)
+    analysis = await loop.run_in_executor(
+        None,
+        get_llm_completion,
+        system_prompt,
+        user_prompt,
+        user_config=user_config
+    )
     return analysis if analysis else "Standard dependency risk detected."
 
 
-async def calculate_predictive_risks(project_id):
+async def calculate_predictive_risks(project_id, user_config):
     print(f"Starting Grouped Risk Analysis for {project_id}...")
     # Delete previous risks
     delete_previous_risks(project_id)
@@ -133,7 +139,7 @@ async def calculate_predictive_risks(project_id):
         
         print(f"Detected legacy conflict: {target} is being touched by {len(sources)} active units.")
         
-        coro = analyze_grouped_conflict_with_llm(target, target_unit, sources)
+        coro = analyze_grouped_conflict_with_llm(target, target_unit, sources, user_config)
         llm_coroutines.append(coro)
         
         conflict_details.append({

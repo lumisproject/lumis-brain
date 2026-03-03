@@ -1,40 +1,25 @@
 import logging
 import asyncio
-import inspect
 import requests
 from typing import Dict, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from fastapi import APIRouter
 
 # Core Modules
-from src.agent import LumisAgent, analyze_fulfillment, match_task_to_commit
+from src.agent import LumisAgent
 from src.ingestor import ingest_repo
 from src.db_client import supabase, get_project_risks
 from src.config import Config
-from src.risk_engine import calculate_predictive_risks
 
 # Jira Integration Modules
 from src.jira_auth import jira_auth_router, get_valid_token
-from src.jira_client import (
-    get_accessible_resources,
-    get_issue_details,
-    get_active_issues,
-    add_comment as add_jira_comment,
-    transition_issue as transition_jira_issue,
-    create_issue as create_jira_issue,
-    get_projects
-)
+from src.jira_client import get_accessible_resources, get_projects
 
 # Notion Integration Modules (NEW)
 from src.notion_auth import notion_auth_router, get_valid_notion_token
-from src.notion_client import (
-    get_active_tasks as get_notion_tasks, 
-    add_comment as add_notion_comment, 
-    transition_task as transition_notion_task, 
-    create_task as create_notion_task
-)
+
+from src.tasks_checking import check_taskes
 
 # --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO)
@@ -53,7 +38,7 @@ app.add_middleware(
 
 # Include Auth Routes
 app.include_router(jira_auth_router)
-app.include_router(notion_auth_router) # <-- NEW Notion auth router
+app.include_router(notion_auth_router)
 
 # --- STATE MANAGEMENT ---
 active_agents: Dict[str, LumisAgent] = {}
@@ -87,6 +72,36 @@ def get_commit_diff(repo_full_name: str, commit_sha: str):
     except Exception as e:
         logger.error(f"Failed to fetch diff from GitHub: {e}")
         return ""
+
+
+def get_repo_name_from_url(repo_url: str) -> str:
+    """Normalize a GitHub URL to the `owner/repo` form expected by the API."""
+    # strip .git suffix and any trailing slash
+    name = repo_url.rstrip("/")
+    if name.endswith(".git"):
+        name = name[:-4]
+    # remove protocol and domain if present
+    for prefix in ("https://github.com/", "http://github.com/", "git@github.com:"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    return name
+
+
+def fetch_commits(repo_full_name: str):
+    """Return the most recent commit for the repository.
+    Gracefully handles errors by returning an empty list.
+    """
+    url = f"https://api.github.com/repos/{repo_full_name}/commits"
+    headers = {"Authorization": f"token {Config.GITHUB_TOKEN}"}
+    try:
+        resp = requests.get(url, headers=headers, params={"per_page": 1})
+        resp.raise_for_status()
+        commits = resp.json()
+        return commits[0] if commits else None
+    except Exception as e:
+        logger.error(f"Failed to fetch commits for {repo_full_name}: {e}")
+        return None
     
 def update_progress(project_id, task, message):
     if project_id not in ingestion_state:
@@ -113,179 +128,14 @@ def update_progress(project_id, task, message):
         state["status"] = "PROCESSING"
 
 
-# --- NOTION BACKGROUND WORKER (NEW) ---
-async def process_notion_webhook_logic(payload: dict, access_token: str, project_id: str, database_id: str):
-    """Handles auto-syncing GitHub commits to Notion."""
-    commits = payload.get("commits", [])
-    repo_name = payload.get("repository", {}).get("full_name")
-    
-    active_tasks = get_notion_tasks(database_id, access_token)
-
-    for commit in commits:
-        message = commit.get("message", "")
-        sha = commit.get("id")
-        
-        if not message or "merge" in message.lower():
-            continue
-
-        logger.info(f"--- Processing Commit for Notion: {message[:50]}... ---")
-
-        # 1. SEMANTIC MATCHING
-        matched_task = match_task_to_commit(message, active_tasks) if active_tasks else None
-        
-        # 2. Rogue Commit Auto-Fulfillment
-        if not matched_task:
-            logger.info(f"No existing Notion task found for commit. Auto-generating...")
-            try:
-                desc = f"Auto-generated ticket for commit {sha} in {repo_name}.\n\nMessage: {message}"
-                new_task = create_notion_task(database_id, message[:200], desc, access_token)
-                if new_task:
-                    new_task_id = new_task['id']
-                    logger.info(f"✅ Auto-created Notion rogue ticket {new_task_id}")
-                    add_notion_comment(new_task_id, f"✅ **Auto-Completed!**\nCode committed directly: `{message}`", access_token)
-                    transition_notion_task(new_task_id, access_token)
-            except Exception as e:
-                logger.error(f"❌ Failed to auto-create Notion ticket: {e}")
-            continue
-
-        # 3. EXISTING LOGIC: Handled matched issues
-        task_id = matched_task["id"]
-        task_summary = matched_task.get("summary", "No summary")
-        logger.info(f"✅ AI Linked commit to Notion Task: {task_summary}")
-
-        try:
-            diff_text = get_commit_diff(repo_name, sha)
-            # The AI prompt expects "matched_issue" to have 'fields' -> 'summary'. Adapt dict.
-            ai_adapted_task = {"key": task_id, "fields": {"summary": task_summary, "description": ""}}
-            analysis = analyze_fulfillment(issue=ai_adapted_task, code_diff=diff_text)
-
-            status = analysis.get("fulfillment_status", "PARTIAL")
-            comment_body = f"🤖 **Lumis AI Sync**\n\n{analysis.get('summary', 'Work processed.')}"
-
-            if status != "COMPLETE":
-                add_notion_comment(task_id, f"🛠️ **Progress Update**\n{comment_body}", access_token)
-                logger.info(f"📝 Notion Task {task_id} updated with partial progress.")
-            else:
-                add_notion_comment(task_id, f"✅ **Task Completed!**\n{comment_body}", access_token)
-                transition_notion_task(task_id, access_token)
-                logger.info(f"🚀 Notion Task {task_id} marked as COMPLETE.")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to sync commit {sha} with Notion: {e}")
-
-    logger.info("--- Notion Sync Cycle Complete ---")
-
-
-# --- JIRA BACKGROUND WORKER ---
-async def process_webhook_logic(payload: dict, access_token: str, project_id: str, preferred_jira_project: str = None):
-    commits = payload.get("commits", [])
-    repo_name = payload.get("repository", {}).get("full_name")
-    
-    resources = get_accessible_resources(access_token)
-    if not resources:
-        logger.error("No active Jira sites found for this user.")
-        return
-    
-    current_cloud_id = resources[0]["id"]
-    active_issues = get_active_issues(current_cloud_id, access_token)
-    
-    project_key = preferred_jira_project
-    
-    if not project_key:
-        if active_issues:
-            project_key = active_issues[0]["key"].split("-")[0]
-        else:
-            projects = get_projects(current_cloud_id, access_token)
-            if projects:
-                project_key = projects[0]["key"]
-
-    if not project_key:
-        logger.error("Could not determine a Jira Project Key. Aborting Jira sync.")
-        return
-
-    for commit in commits:
-        message = commit.get("message", "")
-        sha = commit.get("id")
-        
-        if not message or "merge" in message.lower():
-            continue
-
-        logger.info(f"--- Processing Commit for Jira: {message[:50]}... ---")
-
-        matched_issue = match_task_to_commit(message, active_issues) if active_issues else None
-        
-        if not matched_issue:
-            logger.info(f"No existing ticket found for commit. Auto-generating completed ticket.")
-            try:
-                desc = f"Auto-generated ticket for commit {sha} in {repo_name}."
-                new_ticket = create_jira_issue(current_cloud_id, project_key, message[:250], desc, access_token)
-                new_task_id = new_ticket['key']
-                
-                logger.info(f"✅ Auto-created rogue ticket {new_task_id}")
-                add_jira_comment(current_cloud_id, new_task_id, f"✅ **Auto-Completed!**\nCode was committed directly without an associated ticket: \n`{message}`", access_token)
-                transition_jira_issue(current_cloud_id, new_task_id, access_token)
-            except Exception as e:
-                logger.error(f"❌ Failed to auto-create ticket for rogue commit: {e}")
-            continue
-
-        task_id = matched_issue["key"]
-        task_summary = matched_issue['fields'].get('summary', 'No summary')
-        logger.info(f"✅ AI Linked commit to {task_id}: {task_summary}")
-
-        try:
-            diff_text = get_commit_diff(repo_name, sha)
-            analysis = analyze_fulfillment(issue=matched_issue, code_diff=diff_text)
-
-            status = analysis.get("fulfillment_status", "PARTIAL")
-            risks = analysis.get("identified_risks", [])
-            comment_body = f"🤖 **Lumis AI Sync**\n\n{analysis.get('summary', 'Work processed.')}"
-
-            try:
-                supabase.table("project_risks").delete().eq("project_id", project_id).contains("affected_units", [task_id]).execute()
-            except Exception as e:
-                logger.error(f"Could not clear old risks for {task_id}: {e}")
-
-            if status != "COMPLETE":
-                if not risks:
-                    risks = [{"risk_type": "INCOMPLETE_FEATURE", "severity": "Low", "description": analysis.get("summary", "Partial update."), "affected_units": [task_id]}]
-                for risk in risks:
-                    units = risk.get("affected_units", [])
-                    if task_id not in units: units.append(task_id)
-                    new_risk = {"project_id": project_id, "risk_type": risk.get("risk_type", "INCOMPLETE"), "severity": risk.get("severity", "Medium"), "description": risk.get("description", "Missing requirements"), "affected_units": units}
-                    supabase.table("project_risks").insert(new_risk).execute()
-                
-                add_jira_comment(current_cloud_id, task_id, f"🛠️ **Progress Update**\n{comment_body}\n\n⚠️ *Risks logged in Lumis.*", access_token)
-                logger.info(f"📝 {task_id} updated. {len(risks)} risks saved.")
-
-            elif status == "COMPLETE" and not risks:
-                add_jira_comment(current_cloud_id, task_id, f"✅ **Task Completed!**\n{comment_body}\n\n🎉 *All risks resolved.*", access_token)
-                transition_jira_issue(current_cloud_id, task_id, access_token)
-                logger.info(f"🚀 {task_id} marked as COMPLETE.")
-
-            for follow_up in analysis.get("follow_up_tasks", []):
-                create_jira_issue(current_cloud_id, project_key, f"Follow-up: {follow_up['title'][:200]}", f"Created by Lumis based on commit {sha}:\n\n{follow_up['description']}", access_token)
-                logger.info(f"⚠️ Created critical follow-up task.")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to sync commit {sha} with Jira: {e}")
-
-    logger.info("--- Jira Sync Cycle Complete ---")
-
-async def run_ingestion_pipeline(repo_url: str, project_id: str, user_id: str):
+async def run_ingestion_pipeline(repo_url: str, project_id: str, user_config: Dict = None):
     def progress_cb(t, m):
         update_progress(project_id, t, m)
         
     try:
-        if inspect.iscoroutinefunction(ingest_repo):
-            await ingest_repo(repo_url=repo_url, project_id=project_id, user_id=user_id, progress_callback=progress_cb)
-        else:
-            await asyncio.to_thread(ingest_repo, repo_url=repo_url, project_id=project_id, user_id=user_id, progress_callback=progress_cb)
-        
-        progress_cb("RISK_ANALYSIS", "Running Legacy Code Conflict Analysis...")
-        risks_found = await calculate_predictive_risks(project_id)
-        logger.info(f"Risk analysis complete for {project_id}. Found {risks_found} legacy conflicts.")
-        
+        await ingest_repo(repo_url=repo_url, project_id=project_id, progress_callback=progress_cb, user_config=user_config)
         progress_cb("DONE", "Sync complete.")
+
     except Exception as e:
         logger.error(f"Ingestion Pipeline Error: {e}")
         progress_cb("Error", f"Pipeline failed: {str(e)}")
@@ -295,15 +145,7 @@ async def run_ingestion_pipeline(repo_url: str, project_id: str, user_id: str):
 @app.post("/api/webhook/{user_id}/{project_id}")
 async def github_webhook(user_id: str, project_id: str, request: Request, background_tasks: BackgroundTasks):
     try:
-        res = supabase.table("projects").select("*").eq("id", project_id).eq("user_id", user_id).maybe_single().execute()
-
-        if not res or not res.data:
-            logger.warning(f"Webhook Ignored: Project {project_id} not found for user {user_id}")
-            return {"status": "ignored", "reason": "project_not_found"}
-
-        project_data = res.data
-        preferred_jira_project = project_data.get("jira_project_key")
-        notion_database_id = project_data.get("notion_database_id") # <-- NEW
+        agent = LumisAgent(project_id=project_id, max_steps=3, user_config=request.user_config) 
 
         payload = await request.json()
 
@@ -315,7 +157,6 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
         if "refs/heads/" in ref:
             new_sha = payload.get("after")
             repo_url = payload.get("repository", {}).get("clone_url")
-            commits = payload.get("commits", [])
 
             supabase.table("projects").update({"last_commit": new_sha}).eq("id", project_id).execute()
             logger.info(f"Webhook Trigger: Push detected on {ref} (Commit: {new_sha[:7]})")
@@ -330,29 +171,35 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
                 run_ingestion_pipeline,
                 repo_url=repo_url,
                 project_id=project_id,
-                user_id=user_id
+                user_config=agent.user_config
             )
 
-            # Trigger Jira Sync if connected
-            jira_token = get_valid_token(user_id)
-            if jira_token:
-                try:
-                    resources = get_accessible_resources(jira_token)
-                    if resources:
-                        background_tasks.add_task(process_webhook_logic, payload=payload, access_token=jira_token, project_id=project_id, preferred_jira_project=preferred_jira_project)
-                        logger.info(f"Jira sync queued for user {user_id}")
-                except Exception as jira_err:
-                    logger.error(f"Jira Sync Auth Error: {str(jira_err)}")
-            
-            # Trigger Notion Sync if connected
-            if notion_database_id:
-                notion_token = get_valid_notion_token(user_id)
-                if notion_token:
-                    background_tasks.add_task(process_notion_webhook_logic, payload=payload, access_token=notion_token, project_id=project_id, database_id=notion_database_id)
-                    logger.info(f"Notion sync queued for user {user_id}")
-                else:
-                    logger.warning(f"Notion Sync Skipped: No valid token for user {user_id}")
+            # Check for task matches to trigger Jira or Notion
+            commits = payload.get("commits", [])
+            repo_name = payload.get("repository", {}).get("full_name")
 
+            # look up any stored project mappings (jira/notion) in case the user configured them
+            proj_row = (
+                supabase.table("projects")
+                .select("jira_project_id, notion_project_id")
+                .eq("id", project_id)
+                .maybe_single()
+                .execute()
+            )
+            jira_proj = proj_row.data.get("jira_project_id") if proj_row and proj_row.data else None
+            notion_proj = proj_row.data.get("notion_project_id") if proj_row and proj_row.data else None
+
+            check_taskes(
+                user_id=user_id,
+                project_id=project_id,
+                commits=commits,
+                repo_name=repo_name,
+                background_tasks=background_tasks,
+                jira_project_id=jira_proj,
+                notion_project_id=notion_proj,
+                agent=agent
+            )
+            
             return {"status": "sync_started", "commit": new_sha}
 
         return {"status": "ignored", "reason": "not_a_push_event"}
@@ -366,17 +213,12 @@ async def chat_endpoint(req: ChatRequest):
     try:
         if req.project_id not in active_agents:
             logger.info(f"✨ Spawning agent for {req.project_id}")
-            active_agents[req.project_id] = LumisAgent(project_id=req.project_id, mode=req.mode)
-        
-        agent = active_agents[req.project_id]
-        agent.mode = req.mode
-        agent.user_config = req.user_config 
+            agent = LumisAgent(project_id=req.project_id, mode=req.mode, user_config=req.user_config)
 
         response_text = await asyncio.to_thread(
             agent.ask, 
-            req.query, 
+            req.query,
             reasoning_enabled=req.reasoning,
-            user_id=req.user_config.get("user_id") if req.user_config else None
         )
         
         return {"response": response_text}
@@ -388,12 +230,37 @@ async def chat_endpoint(req: ChatRequest):
 @app.post("/api/ingest")
 async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     try:
-        existing = supabase.table("projects").select("id, last_commit").eq("repo_url", req.repo_url).eq("user_id", req.user_id).execute()
+        logger.info(f"✨ Spawning agent for {req.repo_url}")
+
+        # figure out which project record to use/create
+        existing = (
+            supabase.table("projects")
+            .select("id, last_commit, jira_project_id, notion_project_id")
+            .eq("repo_url", req.repo_url)
+            .eq("user_id", req.user_id)
+            .maybe_single()
+            .execute()
+        )
+
         if existing.data:
-            project_id = existing.data[0]['id']
+            project_id = existing.data.get('id')
+            jira_proj = existing.data.get('jira_project_id')
+            notion_proj = existing.data.get('notion_project_id')
+            last_commit = existing.data.get('last_commit')
+            repo_name = get_repo_name_from_url(req.repo_url)
+            logger.info(f"Existing project found for {req.repo_url} (ID: {project_id}, Repo: {repo_name}, Last Commit: {last_commit[:7] if last_commit else 'N/A'})")
         else:
-            res = supabase.table("projects").insert({"user_id": req.user_id, "repo_url": req.repo_url}).execute()
+            # create the record, store a normalized repo_name if available
+            insert_payload = {
+                "user_id": req.user_id,
+                "repo_url": req.repo_url,
+                "jira_project_id": None,
+                "notion_project_id": None,
+                "last_commit": fetch_commits,}
+            res = supabase.table("projects").insert(insert_payload).execute()
             project_id = res.data[0]['id']
+
+        agent = LumisAgent(project_id=project_id, max_steps=3, user_config=req.user_config)
 
         ingestion_state[project_id] = {"status": "starting", "logs": ["Request received..."], "step": "Init"}
 
@@ -401,9 +268,24 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
             run_ingestion_pipeline,
             repo_url=req.repo_url,
             project_id=project_id,
-            user_id=req.user_id
+            user_config=agent.user_config
         )
-        
+
+        # prepare commit list & repo identifier for task syncing
+        repo_name = get_repo_name_from_url(req.repo_url)
+        commits = fetch_commits(repo_name)
+
+        check_taskes(
+            user_id=req.user_id,
+            project_id=project_id,
+            commits=commits,
+            repo_name=repo_name,
+            background_tasks=background_tasks,
+            jira_project_id=jira_proj,
+            notion_project_id=notion_proj,
+            agent=agent
+        )
+
         return {"project_id": project_id, "status": "started"}
     except Exception as e:
         logger.error(f"Ingest start failed: {e}")
@@ -438,7 +320,6 @@ async def delete_project(user_id: str, project_id: str):
     Permanently deletes a project and all associated analysis data for a given user.
     """
     try:
-        # Look up by project_id first, then verify ownership.
         res = (
             supabase.table("projects")
             .select("id, user_id")
@@ -476,10 +357,10 @@ async def delete_project(user_id: str, project_id: str):
 
 @app.post("/api/projects/{project_id}/jira-mapping")
 async def update_jira_mapping(project_id: str, payload: dict):
-    jira_key = payload.get("jira_project_key")
-    if not jira_key: raise HTTPException(status_code=400, detail="Missing jira_project_key")
-    supabase.table("projects").update({"jira_project_key": jira_key}).eq("id", project_id).execute()
-    return {"status": "success", "jira_project_key": jira_key}
+    jira_key = payload.get("jira_project_id")
+    if not jira_key: raise HTTPException(status_code=400, detail="Missing jira_project_id")
+    supabase.table("projects").update({"jira_project_id": jira_key}).eq("id", project_id).execute()
+    return {"status": "success", "jira_project_id": jira_key}
 
 # --- NEW NOTION ENDPOINTS ---
 @app.get("/api/notion/databases/{user_id}")
@@ -497,12 +378,12 @@ async def get_user_notion_databases(user_id: str):
 @app.post("/api/projects/{project_id}/notion-mapping")
 async def update_notion_mapping(project_id: str, payload: dict):
     """Saves the user's selected Notion database ID."""
-    notion_db_id = payload.get("notion_database_id")
+    notion_db_id = payload.get("notion_project_id")
     if not notion_db_id:
-        raise HTTPException(status_code=400, detail="Missing notion_database_id")
+        raise HTTPException(status_code=400, detail="Missing notion_project_id")
         
-    supabase.table("projects").update({"notion_database_id": notion_db_id}).eq("id", project_id).execute()
-    return {"status": "success", "notion_database_id": notion_db_id}
+    supabase.table("projects").update({"notion_project_id": notion_db_id}).eq("id", project_id).execute()
+    return {"status": "success", "notion_project_id": notion_db_id}
 
 @app.get("/api/status")
 async def health_check():

@@ -98,7 +98,7 @@ const SettingsContent = () => {
       try {
         await fetch(`${API_BASE}/api/projects/${currentProject.id}/jira-mapping`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jira_project_key: key })
+          body: JSON.stringify({ jira_project_id: key })
         });
       } catch (error) { console.error("Failed to save Jira mapping", error); }
     }

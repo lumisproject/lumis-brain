@@ -1,11 +1,15 @@
 import os
+import shutil
 import git
-import asyncio
+import logging
 from datetime import datetime, timezone
 from src.services import embed_model, generate_footprint
 from src.db_client import supabase, save_memory_units, save_edges, get_unit_footprint
 from src.parser import AdvancedCodeParser
 from src.risk_engine import calculate_predictive_risks
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("LumisAPI")
 
 # --- FASTCODE OPTIMIZATION: BATCH GIT BLAME ---
 def get_file_blame_metadata(repo_path, file_path, repo_obj):
@@ -29,11 +33,9 @@ def get_file_blame_metadata(repo_path, file_path, repo_obj):
         print(f"Blame failed for {rel_path}: {e}")
         return {}
 
-
-async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
+async def ingest_repo(repo_url, project_id, progress_callback=None, user_config=None):
+    repo_path = os.path.abspath(f"./temp_repos/{project_id}")
     try:
-        repo_path = os.path.abspath(f"./temp_repos/{project_id}")
-        
         if progress_callback: progress_callback("CLONING", f"Cloning {repo_url}...")
         
         if os.path.exists(repo_path):
@@ -85,7 +87,7 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     
                     s_line = max(1, block.start_line + 1)
                     last_mod, author = file_blame_meta.get(s_line, (datetime.now(timezone.utc), "unknown"))
-                    
+
                     blocks_to_embed.append({
                         "identifier": clean_id,
                         "type": block.type,
@@ -98,7 +100,6 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     })
                     current_scan_identifiers.append(clean_id)
 
-                    # 3. COLLECT EDGES FOR BULK INSERT
                     # 3. COLLECT EDGES FOR BULK INSERT
                     if block.calls: 
                         edges_to_insert.extend([{"project_id": project_id, "source_unit_name": clean_id, "target_unit_name": t, "edge_type": "calls"} for t in block.calls])
@@ -142,7 +143,11 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                 unique_edges_set.add(e_tuple)
                 deduped_edges.append(e)
         edges_to_insert = deduped_edges
-        # --------------------------------------------------------
+        
+        # Summary of blocks' content
+        if progress_callback: progress_callback("SUMMARY", "creating summaries for code blocks...")
+        for b in blocks_to_embed:
+            b["summary"] = parser.summarize_block(b["content"], user_config=user_config)
 
         # --- OPTIMIZATION: BATCH EMBEDDING ---
         if progress_callback: progress_callback("EMBEDDING", "Generating Vector Embeddings in Bulk...")
@@ -153,7 +158,7 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
             all_contents = [b["content"] for b in blocks_to_embed]
             
             # Fire ONE call to embed everything at once directly via the model
-            bulk_embeddings = embed_model.encode(all_contents, batch_size=32).tolist()
+            bulk_embeddings = embed_model.encode(all_contents).tolist()
             
             # Re-associate embeddings with their metadata
             for i, b in enumerate(blocks_to_embed):
@@ -162,7 +167,7 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
                     "type": b["type"],
                     "file_path": b["file_path"],
                     "content": b["content"],
-                    "summary": f"Functional extraction for {b['name']}",
+                    "summary": b['summary'],
                     "footprint": b["footprint"],
                     "embedding": bulk_embeddings[i], # Attach batched embedding
                     "last_modified_at": b["last_mod"],
@@ -173,7 +178,7 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
         # --- NETWORK EXECUTION ---
         if progress_callback: progress_callback("DATABASE", "Bulk inserting vectors to Supabase...")
         
-        # Batch insert chunks of 100 to avoid payload size errors
+        # Batch insert chunks of 100
         batch_size = 100
         for i in range(0, len(units_to_insert), batch_size):
             save_memory_units(project_id, units_to_insert[i:i + batch_size])
@@ -198,9 +203,18 @@ async def ingest_repo(repo_url, project_id, user_id, progress_callback=None):
         # 5. FASTCODE OPTIMIZATION: DECOUPLED RISK ENGINE
         if progress_callback: progress_callback("DONE", "Fast Sync Complete. Running Intelligence in Background...")
         
-        # Push the heavy predictive logic to the background so the user gets an instant 'Success' response
-        await calculate_predictive_risks(project_id)
+        # Run risk analysis
+        progress_callback("RISK_ANALYSIS", "Running Legacy Code Conflict Analysis...")
+        risks_found = await calculate_predictive_risks(project_id, user_config=user_config)
+        logger.info(f"Risk analysis complete for {project_id}. Found {risks_found} legacy conflicts.")
 
     except Exception as e:
         print(f"CRITICAL ERROR: {e}")
         if progress_callback: progress_callback("Error", str(e))
+    finally:
+        try:
+            if os.path.exists(repo_path):
+                shutil.rmtree(repo_path, ignore_errors=True)
+                logging.info(f"Cleaned up local repo at {repo_path}")
+        except Exception as cleanup_err:
+            print(f"Cleanup failed for {repo_path}: {cleanup_err}")

@@ -2,6 +2,7 @@ import os
 from typing import List, Optional, get_args
 from dataclasses import dataclass, field
 from tree_sitter_language_pack import get_parser, SupportedLanguage
+from src.services import get_llm_completion
 
 # --- CONFIGURATION ---
 IGNORE_EXT = (
@@ -440,3 +441,9 @@ class AdvancedCodeParser:
                 bases.append(content[superclass.start_byte:superclass.end_byte].decode('utf-8'))
 
         return bases
+    
+    def summarize_block(self, block_content: str, user_config: dict = None) -> str:
+        """Generates a summary for a given code block"""
+        system_prompt = ()
+        prompt = ()
+        response = get_llm_completion(system_prompt, prompt, user_config=user_config)

@@ -16,7 +16,7 @@ class EmbedModelWrapper:
     def __init__(self, embedder):
         self.embedder = embedder
         
-    def encode(self, texts, batch_size=32):
+    def encode(self, texts):
         embeddings = self.embedder.embed_documents(texts)
         return np.array(embeddings)
 
@@ -28,12 +28,15 @@ def get_embedding(text: str):
 
 
 # 2. LLM INFRASTRUCTURE.
-def get_llm(temperature=0.2, user_config=None, reasoning_enabled=False):
-    user_config = user_config or {}
+def get_llm(temperature=0.3, user_config=None):
+    reasoning_enabled = user_config.get("reasoning_enabled", False) if user_config else False
+    print(f"LLM Config - Reasoning Enabled: {reasoning_enabled}")
 
     provider = user_config.get("provider") or Config.DEFAULT_LLM_PROVIDER
     api_key = user_config.get("api_key") or Config.DEFAULT_LLM_API_KEY
     model_name = user_config.get("model") or Config.DEFAULT_LLM_MODEL
+
+    print(f"Using LLM Provider: {provider}, Model: {model_name}")
 
     if provider == "openrouter":
         extra_body = {"reasoning": {"enabled": True}} if reasoning_enabled else None
@@ -71,13 +74,12 @@ def get_llm(temperature=0.2, user_config=None, reasoning_enabled=False):
     raise ValueError(f"Provider {provider} is not supported yet.")
 
 
-def get_llm_completion(system_prompt, user_prompt, temperature=0.2, reasoning_enabled=False, user_config=None):
+def get_llm_completion(system_prompt, user_prompt, user_config=None):
     try:
         # 1. Dynamically get the LLM based on user overrides or defaults
         llm = get_llm(
-            temperature=temperature, 
-            user_config=user_config, 
-            reasoning_enabled=reasoning_enabled
+            temperature=0.3,
+            user_config=user_config,
         )
         
         # 2. Format messages using LangChain primitives
