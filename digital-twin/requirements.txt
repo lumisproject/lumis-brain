@@ -1,51 +1,31 @@
-# Core Dependencies
+# Core Environment
 python-dotenv
-pyyaml
-click
 
 # Repository Management
 gitpython
 
 # Code Parsing
 tree-sitter-language-pack
-libcst
 
-# Embeddings & Vector Store
-sentence-transformers
-faiss-cpu
-chromadb
+# LLM & Embeddings (LangChain)
 langchain
 langchain-openai
 langchain-huggingface
-huggingface_hub
 langchain-anthropic
 langchain-google-genai
 
-# Search & Retrieval
-rank-bm25
+# Graph & Risk Analysis
 networkx
 
-# API
+# API & Server
 fastapi
 uvicorn
 pydantic
 python-multipart
 
-# Utilities
-tqdm
-numpy
-pandas
-pathspec
-
-# Caching
-diskcache
-redis
-
-# Testing
-pytest
-pytest-asyncio
-pytest-cov
-
-
+# Database & HTTP
 supabase
 requests
+
+# Math/Utilities
+numpy
