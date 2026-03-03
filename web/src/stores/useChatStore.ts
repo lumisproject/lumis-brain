@@ -54,6 +54,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             api_key: settings.apiKey,
             model: settings.selectedModel,
             user_id: userId,
+            reasoning_enabled: reasoningEnabled,
+            mode: chatMode,
+            projectId: projectId,
           };
 
       const res = await fetch(`${API_BASE}/api/chat`, {

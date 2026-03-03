@@ -1,13 +1,15 @@
 import hashlib
-#from sentence_transformers import SentenceTransformer
-#from dotenv import load_dotenv
 import numpy as np
+import requests
+import logging
 from src.config import Config
 
 # --- LangChain Imports ---
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from langchain_huggingface import HuggingFaceEmbeddings
+
+logger = logging.getLogger(__name__)
 
 # 1. EMBEDDINGS INFRASTRUCTURE
 lc_embedder = HuggingFaceEmbeddings(model_name=Config.EMBEDDING_MODEL)
@@ -30,13 +32,12 @@ def get_embedding(text: str):
 # 2. LLM INFRASTRUCTURE.
 def get_llm(temperature=0.3, user_config=None):
     reasoning_enabled = user_config.get("reasoning_enabled", False) if user_config else False
-    print(f"LLM Config - Reasoning Enabled: {reasoning_enabled}")
 
     provider = user_config.get("provider") or Config.DEFAULT_LLM_PROVIDER
     api_key = user_config.get("api_key") or Config.DEFAULT_LLM_API_KEY
     model_name = user_config.get("model") or Config.DEFAULT_LLM_MODEL
 
-    print(f"Using LLM Provider: {provider}, Model: {model_name}")
+    print(f"Using LLM Provider: {provider}, Model: {model_name}, Reasoning: {reasoning_enabled}")
 
     if provider == "openrouter":
         extra_body = {"reasoning": {"enabled": True}} if reasoning_enabled else None
@@ -104,3 +105,20 @@ def get_llm_completion(system_prompt, user_prompt, user_config=None):
 
 def generate_footprint(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+def get_commit_diff(repo_full_name: str, commit_sha: str):
+    """Fetches the actual code changes (diff) for a specific commit."""
+    url = f"https://api.github.com/repos/{repo_full_name}/commits/{commit_sha}"
+    
+    headers = {
+        "Authorization": f"token {Config.GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3.diff" 
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        logger.error(f"Failed to fetch diff from GitHub: {e}")
+        return ""

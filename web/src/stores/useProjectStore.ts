@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { supabase, API_BASE } from '@/lib/supabase';
+import { useSettingsStore } from './useSettingsStore';
 
 interface Risk {
   id: string;
@@ -125,11 +126,23 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   startIngestion: async (userId, repoUrl) => {
+    // Add logic to get config settings
+    const settings = useSettingsStore.getState();
+    const userConfig = settings.useDefault
+        ? { user_id: userId }
+        : {
+            provider: settings.provider,
+            api_key: settings.apiKey,
+            model: settings.selectedModel,
+            user_id: userId,
+          };
+
     try {
       const res = await fetch(`${API_BASE}/api/ingest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, repo_url: repoUrl }),
+        // Append user_config to the POST body
+        body: JSON.stringify({ user_id: userId, repo_url: repoUrl, user_config: userConfig }),
       });
       const data = await res.json();
       return data.project_id || null;

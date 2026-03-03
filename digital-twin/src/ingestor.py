@@ -1,7 +1,9 @@
 import os
 import shutil
 import git
+import stat
 import logging
+from git.exc import InvalidGitRepositoryError
 from datetime import datetime, timezone
 from src.services import embed_model, generate_footprint
 from src.db_client import supabase, save_memory_units, save_edges, get_unit_footprint
@@ -11,7 +13,14 @@ from src.risk_engine import calculate_predictive_risks
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LumisAPI")
 
-# --- FASTCODE OPTIMIZATION: BATCH GIT BLAME ---
+def remove_readonly(func, path, _):
+    """Helper to remove read-only restrictions during rmtree on Windows."""
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass
+
 def get_file_blame_metadata(repo_path, file_path, repo_obj):
     """Runs git blame ONCE per file and maps each line to its last author and commit time."""
     rel_path = os.path.relpath(file_path, repo_path)
@@ -35,12 +44,20 @@ def get_file_blame_metadata(repo_path, file_path, repo_obj):
 
 async def ingest_repo(repo_url, project_id, progress_callback=None, user_config=None):
     repo_path = os.path.abspath(f"./temp_repos/{project_id}")
+    repo = None
     try:
         if progress_callback: progress_callback("CLONING", f"Cloning {repo_url}...")
         
         if os.path.exists(repo_path):
-            repo = git.Repo(repo_path)
-            repo.remotes.origin.pull()
+            try:
+                repo = git.Repo(repo_path)
+                repo.remotes.origin.pull()
+            except (InvalidGitRepositoryError, Exception):
+                # Corrupted folder left behind. Close lock, wipe it cleanly, and clone fresh.
+                if repo:
+                    repo.close()
+                shutil.rmtree(repo_path, onerror=remove_readonly)
+                repo = git.Repo.clone_from(repo_url, repo_path)
         else:
             os.makedirs(os.path.dirname(repo_path), exist_ok=True)
             repo = git.Repo.clone_from(repo_url, repo_path)
@@ -213,8 +230,11 @@ async def ingest_repo(repo_url, project_id, progress_callback=None, user_config=
         if progress_callback: progress_callback("Error", str(e))
     finally:
         try:
+            if repo:
+                repo.close()
+                
             if os.path.exists(repo_path):
-                shutil.rmtree(repo_path, ignore_errors=True)
+                shutil.rmtree(repo_path, onerror=remove_readonly)
                 logging.info(f"Cleaned up local repo at {repo_path}")
         except Exception as cleanup_err:
             print(f"Cleanup failed for {repo_path}: {cleanup_err}")

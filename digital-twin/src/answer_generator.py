@@ -133,7 +133,7 @@ Symbol Mappings:
             
             # Graceful failure response
             return {
-                "answer": f"Error generating answer: {str(e)}. Please check the logs or try rephrasing.",
+                "answer": f"Error generating answer: {str(e)}. Please check the procided LLM or use default.",
                 "summary": "Error occurred during generation.",
                 "sources": [e.get('file_path', 'unknown') for e in collected_elements]
             }

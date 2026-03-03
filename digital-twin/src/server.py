@@ -55,24 +55,7 @@ class ChatRequest(BaseModel):
 class IngestRequest(BaseModel):
     user_id: str
     repo_url: str
-
-def get_commit_diff(repo_full_name: str, commit_sha: str):
-    """Fetches the actual code changes (diff) for a specific commit."""
-    url = f"https://api.github.com/repos/{repo_full_name}/commits/{commit_sha}"
-    
-    headers = {
-        "Authorization": f"token {Config.GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3.diff" 
-    }
-    
-    try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        logger.error(f"Failed to fetch diff from GitHub: {e}")
-        return ""
-
+    user_config: Optional[Dict] = None
 
 def get_repo_name_from_url(repo_url: str) -> str:
     """Normalize a GitHub URL to the `owner/repo` form expected by the API."""
@@ -89,19 +72,24 @@ def get_repo_name_from_url(repo_url: str) -> str:
 
 
 def fetch_commits(repo_full_name: str):
-    """Return the most recent commit for the repository.
-    Gracefully handles errors by returning an empty list.
-    """
+    """Return the most recent commits for the repository as a normalized list."""
     url = f"https://api.github.com/repos/{repo_full_name}/commits"
     headers = {"Authorization": f"token {Config.GITHUB_TOKEN}"}
     try:
-        resp = requests.get(url, headers=headers, params={"per_page": 1})
+        resp = requests.get(url, headers=headers, params={"per_page": 5})
         resp.raise_for_status()
-        commits = resp.json()
-        return commits[0] if commits else None
+        commits_data = resp.json()
+        
+        formatted_commits = []
+        for c in commits_data:
+            formatted_commits.append({
+                "sha": c.get("sha"),
+                "message": c.get("commit", {}).get("message", "")
+            })
+        return formatted_commits
     except Exception as e:
         logger.error(f"Failed to fetch commits for {repo_full_name}: {e}")
-        return None
+        return []
     
 def update_progress(project_id, task, message):
     if project_id not in ingestion_state:
@@ -145,13 +133,15 @@ async def run_ingestion_pipeline(repo_url: str, project_id: str, user_config: Di
 @app.post("/api/webhook/{user_id}/{project_id}")
 async def github_webhook(user_id: str, project_id: str, request: Request, background_tasks: BackgroundTasks):
     try:
-        agent = LumisAgent(project_id=project_id, max_steps=3, user_config=request.user_config) 
-
         payload = await request.json()
 
         if "zen" in payload:
             logger.info("GitHub Zen ping received. Connection verified.")
             return {"status": "ok", "message": "Lumis Unified Gateway is listening"}
+
+        # Fix: Provide a default user_config for webhooks
+        user_config = {"user_id": user_id}
+        agent = LumisAgent(project_id=project_id, max_steps=3, user_config=user_config, mode="single-turn") 
 
         ref = payload.get("ref", "")
         if "refs/heads/" in ref:
@@ -171,14 +161,20 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
                 run_ingestion_pipeline,
                 repo_url=repo_url,
                 project_id=project_id,
-                user_config=agent.user_config
+                user_config=user_config
             )
 
-            # Check for task matches to trigger Jira or Notion
-            commits = payload.get("commits", [])
+            raw_commits = payload.get("commits", [])
             repo_name = payload.get("repository", {}).get("full_name")
 
-            # look up any stored project mappings (jira/notion) in case the user configured them
+            # Fix: Normalize GitHub push webhook payload format to match what our AI expects
+            normalized_commits = []
+            for c in raw_commits:
+                normalized_commits.append({
+                    "sha": c.get("id", c.get("sha")),
+                    "message": c.get("message", "")
+                })
+
             proj_row = (
                 supabase.table("projects")
                 .select("jira_project_id, notion_project_id")
@@ -192,7 +188,7 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
             check_taskes(
                 user_id=user_id,
                 project_id=project_id,
-                commits=commits,
+                commits=normalized_commits,
                 repo_name=repo_name,
                 background_tasks=background_tasks,
                 jira_project_id=jira_proj,
@@ -211,14 +207,20 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
 @app.post("/api/chat")
 async def chat_endpoint(req: ChatRequest):
     try:
+        # FIX: Check if agent exists, if not, create AND SAVE IT.
         if req.project_id not in active_agents:
             logger.info(f"✨ Spawning agent for {req.project_id}")
-            agent = LumisAgent(project_id=req.project_id, mode=req.mode, user_config=req.user_config)
+            agent = LumisAgent(project_id=req.project_id, user_config=req.user_config)
+            print(f"Agent initialized with config: {agent.user_config}")
+            
+            active_agents[req.project_id] = agent
+        else:
+            agent = active_agents[req.project_id]
 
+        # Now the agent will remember its state and properly apply the reasoning flag
         response_text = await asyncio.to_thread(
             agent.ask, 
             req.query,
-            reasoning_enabled=req.reasoning,
         )
         
         return {"response": response_text}
@@ -232,7 +234,6 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     try:
         logger.info(f"✨ Spawning agent for {req.repo_url}")
 
-        # figure out which project record to use/create
         existing = (
             supabase.table("projects")
             .select("id, last_commit, jira_project_id, notion_project_id")
@@ -241,24 +242,30 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
             .maybe_single()
             .execute()
         )
+        
+        repo_name = get_repo_name_from_url(req.repo_url)
+        commits = fetch_commits(repo_name)
 
         if existing.data:
             project_id = existing.data.get('id')
             jira_proj = existing.data.get('jira_project_id')
             notion_proj = existing.data.get('notion_project_id')
             last_commit = existing.data.get('last_commit')
-            repo_name = get_repo_name_from_url(req.repo_url)
             logger.info(f"Existing project found for {req.repo_url} (ID: {project_id}, Repo: {repo_name}, Last Commit: {last_commit[:7] if last_commit else 'N/A'})")
         else:
-            # create the record, store a normalized repo_name if available
+            # Fix: Save actual string hash instead of function reference
+            latest_commit_sha = commits[0]["sha"] if commits else None
             insert_payload = {
                 "user_id": req.user_id,
                 "repo_url": req.repo_url,
                 "jira_project_id": None,
                 "notion_project_id": None,
-                "last_commit": fetch_commits,}
+                "last_commit": latest_commit_sha,
+            }
             res = supabase.table("projects").insert(insert_payload).execute()
             project_id = res.data[0]['id']
+            jira_proj = None
+            notion_proj = None
 
         agent = LumisAgent(project_id=project_id, max_steps=3, user_config=req.user_config)
 
@@ -270,10 +277,6 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
             project_id=project_id,
             user_config=agent.user_config
         )
-
-        # prepare commit list & repo identifier for task syncing
-        repo_name = get_repo_name_from_url(req.repo_url)
-        commits = fetch_commits(repo_name)
 
         check_taskes(
             user_id=req.user_id,

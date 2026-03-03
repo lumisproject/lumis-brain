@@ -32,7 +32,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 
-const NGROK_PLACEHOLDER = 'https://unsparing-kaley-unmodest.ngrok-free.dev';
+const NGROK_PLACEHOLDER = 'unsparing-kaley-unmodest.ngrok-free.dev';
 
 const OnboardingCard = ({ userId }: { userId: string }) => {
   const [repoUrl, setRepoUrl] = useState('');
