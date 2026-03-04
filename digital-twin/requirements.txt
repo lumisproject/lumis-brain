@@ -1,5 +1,7 @@
 # Core Environment
 python-dotenv
+pyyaml
+click
 
 # Repository Management
 gitpython
@@ -13,6 +15,7 @@ langchain-openai
 langchain-huggingface
 langchain-anthropic
 langchain-google-genai
+sentence-transformers
 
 # Graph & Risk Analysis
 networkx
