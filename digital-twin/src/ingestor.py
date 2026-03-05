@@ -160,11 +160,6 @@ async def ingest_repo(repo_url, project_id, progress_callback=None, user_config=
                 unique_edges_set.add(e_tuple)
                 deduped_edges.append(e)
         edges_to_insert = deduped_edges
-        
-        # Summary of blocks' content
-        if progress_callback: progress_callback("SUMMARY", "creating summaries for code blocks...")
-        for b in blocks_to_embed:
-            b["summary"] = parser.summarize_block(b["content"], user_config=user_config)
 
         # --- OPTIMIZATION: BATCH EMBEDDING ---
         if progress_callback: progress_callback("EMBEDDING", "Generating Vector Embeddings in Bulk...")
@@ -184,7 +179,6 @@ async def ingest_repo(repo_url, project_id, progress_callback=None, user_config=
                     "type": b["type"],
                     "file_path": b["file_path"],
                     "content": b["content"],
-                    "summary": b['summary'],
                     "footprint": b["footprint"],
                     "embedding": bulk_embeddings[i], # Attach batched embedding
                     "last_modified_at": b["last_mod"],

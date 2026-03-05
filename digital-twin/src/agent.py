@@ -227,11 +227,17 @@ class LumisAgent:
                     search_input = f"{search_input} {processed_query.rewritten_query}"
                 if processed_query and processed_query.pseudocode_hints:
                     search_input += f" {processed_query.pseudocode_hints}"
+                
                 data = self.retriever.search(search_input, user_config=self.user_config)
+                
                 if data:
                     collected.extend(data)
-                    found_files = list(set([d['file_path'] for d in data]))
-                    obs = f"Found {len(data)} matches in: {', '.join(found_files[:10])}"
+                    
+                    found_matches = []
+                    for d in data[:5]: 
+                        found_matches.append(f"- {d['file_path']} ({d['unit_name']})")
+                    
+                    obs = f"Found {len(data)} matches. Top results context:\n" + "\n".join(found_matches)
                 else:
                     obs = f"No results found. Try broader keywords."
         except Exception as e:

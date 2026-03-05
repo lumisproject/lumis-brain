@@ -441,9 +441,3 @@ class AdvancedCodeParser:
                 bases.append(content[superclass.start_byte:superclass.end_byte].decode('utf-8'))
 
         return bases
-    
-    def summarize_block(self, block_content: str, user_config: dict = None) -> str:
-        """Generates a summary for a given code block"""
-        system_prompt = ()
-        prompt = ()
-        response = get_llm_completion(system_prompt, prompt, user_config=user_config)
