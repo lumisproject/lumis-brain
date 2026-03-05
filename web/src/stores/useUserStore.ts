@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
 import { useChatStore } from '@/stores/useChatStore';
-import { useSettingsStore } from '@/stores/useSettingsStore'; // Add this import
+import { useSettingsStore } from '@/stores/useSettingsStore';
 
 interface UserState {
   user: User | null;
@@ -13,6 +13,7 @@ interface UserState {
   signUp: (email: string, password: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   checkSession: () => Promise<void>;
+  setupAuthListener: () => { unsubscribe: () => void }; // NEW
   clearError: () => void;
 }
 
@@ -31,11 +32,9 @@ export const useUserStore = create<UserState>((set) => ({
     }
     set({ user: data.user, session: data.session, loading: false });
 
-    // Fetch user specific settings
     if (data.user) {
       await useSettingsStore.getState().fetchSettings(data.user.id);
     }
-
     try { useChatStore.getState().clearMessages(); } catch {}
     return true;
   },
@@ -49,11 +48,9 @@ export const useUserStore = create<UserState>((set) => ({
     }
     set({ user: data.user, session: data.session, loading: false });
 
-    // Fetch user specific settings
     if (data.user) {
       await useSettingsStore.getState().fetchSettings(data.user.id);
     }
-
     try { useChatStore.getState().clearMessages(); } catch {}
     return true;
   },
@@ -62,7 +59,6 @@ export const useUserStore = create<UserState>((set) => ({
     await supabase.auth.signOut();
     set({ user: null, session: null });
 
-    // Clear settings back to default on sign out
     useSettingsStore.getState().setSettings({
       useDefault: true,
       provider: 'openrouter',
@@ -83,13 +79,20 @@ export const useUserStore = create<UserState>((set) => ({
     if (session?.user) {
       await useSettingsStore.getState().fetchSettings(session.user.id);
     }
+  },
 
-    supabase.auth.onAuthStateChange((_event, session) => {
+  // ISSUE 3 FIX: Decoupled listener with an unsubscribe method
+  setupAuthListener: () => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       set({ user: session?.user ?? null, session });
       if (session?.user) {
         useSettingsStore.getState().fetchSettings(session.user.id);
       }
     });
+    
+    return {
+      unsubscribe: () => subscription.unsubscribe()
+    };
   },
 
   clearError: () => set({ error: null }),

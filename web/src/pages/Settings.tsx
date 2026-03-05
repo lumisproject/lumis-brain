@@ -46,13 +46,27 @@ const SettingsContent = () => {
 
   const userId = user?.id || '';
 
-  // Wrapper functions to inject the userId into the updateSetting call
+  // Wrapper functions to inject the userId into the updateSetting call for non-text inputs
   const setUseDefault = (val: boolean) => updateSetting(userId, 'useDefault', val);
   const setProvider = (val: string) => updateSetting(userId, 'provider', val);
-  const setApiKey = (val: string) => updateSetting(userId, 'apiKey', val);
-  const setSelectedModel = (val: string) => updateSetting(userId, 'selectedModel', val);
   const setJiraProjectKey = (val: string) => updateSetting(userId, 'jiraProjectKey', val);
   const setNotionDatabaseId = (val: string) => updateSetting(userId, 'notionDatabaseId', val);
+
+  // FIX: Use local state for text inputs to prevent per-keystroke DB spam
+  const [localApiKey, setLocalApiKey] = useState(apiKey);
+  const [localModel, setLocalModel] = useState(selectedModel);
+
+  // Sync local state if remote settings change (e.g., on initial load)
+  useEffect(() => setLocalApiKey(apiKey), [apiKey]);
+  useEffect(() => setLocalModel(selectedModel), [selectedModel]);
+
+  // Only trigger the Supabase upsert when the user finishes typing (onBlur)
+  const handleApiKeyBlur = () => {
+    if (localApiKey !== apiKey) updateSetting(userId, 'apiKey', localApiKey);
+  };
+  const handleModelBlur = () => {
+    if (localModel !== selectedModel) updateSetting(userId, 'selectedModel', localModel);
+  };
 
   // Fetch connection statuses on load
   useEffect(() => {
@@ -158,12 +172,23 @@ const SettingsContent = () => {
 
               <div className="space-y-2">
                 <Label>API Key</Label>
-                <Input type="password" placeholder="sk-..." value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <Input 
+                  type="password" 
+                  placeholder="sk-..." 
+                  value={localApiKey} 
+                  onChange={(e) => setLocalApiKey(e.target.value)} 
+                  onBlur={handleApiKeyBlur}
+                />
               </div>
 
               <div className="space-y-2">
                 <Label>Model ID</Label>
-                <Input placeholder="stepfun/step-3.5-flash:free" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} />
+                <Input 
+                  placeholder="stepfun/step-3.5-flash:free" 
+                  value={localModel} 
+                  onChange={(e) => setLocalModel(e.target.value)} 
+                  onBlur={handleModelBlur}
+                />
               </div>
             </div>
           )}

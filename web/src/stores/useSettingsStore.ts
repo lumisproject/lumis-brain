@@ -8,8 +8,13 @@ interface SettingsState {
   selectedModel: string;
   jiraProjectKey: string;
   notionDatabaseId: string;
-  setSettings: (settings: Partial<SettingsState>) => void;
-  updateSetting: (userId: string, key: string, value: any) => Promise<void>;
+  setSettings: (settings: Partial<Omit<SettingsState, 'setSettings' | 'updateSetting' | 'fetchSettings'>>) => void;
+  // ISSUE 2 FIX: Strongly typed key and corresponding value
+  updateSetting: <K extends keyof Omit<SettingsState, 'setSettings' | 'updateSetting' | 'fetchSettings'>>(
+    userId: string, 
+    key: K, 
+    value: SettingsState[K]
+  ) => Promise<void>;
   fetchSettings: (userId: string) => Promise<void>;
 }
 
@@ -55,6 +60,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       .select('*')
       .eq('user_id', userId)
       .maybeSingle();
+
+    // ISSUE 4 FIX: Early return so we don't wipe settings on network errors
+    if (error) {
+      console.error('Error fetching settings:', error);
+      return; 
+    }
 
     if (data) {
       set({
