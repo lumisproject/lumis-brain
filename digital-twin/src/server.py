@@ -301,7 +301,7 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
             res = supabase.table("projects").insert(insert_payload).execute()
             
             if not res or not res.data:
-                 raise Exception("Failed to create project in database")
+                raise Exception("Failed to create project in database")
                  
             project_id = res.data[0]['id']
             jira_proj = None
