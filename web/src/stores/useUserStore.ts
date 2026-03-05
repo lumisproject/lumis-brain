@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
 import { useChatStore } from '@/stores/useChatStore';
+import { useSettingsStore } from '@/stores/useSettingsStore'; // Add this import
 
 interface UserState {
   user: User | null;
@@ -30,13 +31,12 @@ export const useUserStore = create<UserState>((set) => ({
     }
     set({ user: data.user, session: data.session, loading: false });
 
-    // Reset chat when a user logs in (new or returning)
-    try {
-      useChatStore.getState().clearMessages();
-    } catch {
-      // ignore
+    // Fetch user specific settings
+    if (data.user) {
+      await useSettingsStore.getState().fetchSettings(data.user.id);
     }
 
+    try { useChatStore.getState().clearMessages(); } catch {}
     return true;
   },
 
@@ -49,13 +49,12 @@ export const useUserStore = create<UserState>((set) => ({
     }
     set({ user: data.user, session: data.session, loading: false });
 
-    // New accounts should always start with an empty chat
-    try {
-      useChatStore.getState().clearMessages();
-    } catch {
-      // ignore
+    // Fetch user specific settings
+    if (data.user) {
+      await useSettingsStore.getState().fetchSettings(data.user.id);
     }
 
+    try { useChatStore.getState().clearMessages(); } catch {}
     return true;
   },
 
@@ -63,12 +62,17 @@ export const useUserStore = create<UserState>((set) => ({
     await supabase.auth.signOut();
     set({ user: null, session: null });
 
-    // Clear chat history when logging out so the next user doesn't see it
-    try {
-      useChatStore.getState().clearMessages();
-    } catch {
-      // ignore
-    }
+    // Clear settings back to default on sign out
+    useSettingsStore.getState().setSettings({
+      useDefault: true,
+      provider: 'openrouter',
+      apiKey: '',
+      selectedModel: 'stepfun/step-3.5-flash:free',
+      jiraProjectKey: '',
+      notionDatabaseId: '',
+    });
+
+    try { useChatStore.getState().clearMessages(); } catch {}
   },
 
   checkSession: async () => {
@@ -76,8 +80,15 @@ export const useUserStore = create<UserState>((set) => ({
     const { data: { session } } = await supabase.auth.getSession();
     set({ user: session?.user ?? null, session, loading: false });
 
+    if (session?.user) {
+      await useSettingsStore.getState().fetchSettings(session.user.id);
+    }
+
     supabase.auth.onAuthStateChange((_event, session) => {
       set({ user: session?.user ?? null, session });
+      if (session?.user) {
+        useSettingsStore.getState().fetchSettings(session.user.id);
+      }
     });
   },
 

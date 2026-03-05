@@ -23,7 +23,7 @@ const SettingsContent = () => {
   const { user } = useUserStore();
   const { 
     jiraConnected, fetchJiraStatus, disconnectJira, 
-    notionConnected, fetchNotionStatus, disconnectNotion, // <-- NEW
+    notionConnected, fetchNotionStatus, disconnectNotion,
     project: currentProject 
   } = useProjectStore();
   
@@ -31,8 +31,8 @@ const SettingsContent = () => {
   const [availableJiraProjects, setAvailableJiraProjects] = useState<{key: string, name: string}[]>([]);
   const [loadingJiraProjects, setLoadingJiraProjects] = useState(false);
   
-  const [availableNotionDatabases, setAvailableNotionDatabases] = useState<{id: string, name: string}[]>([]); // <-- NEW
-  const [loadingNotionDatabases, setLoadingNotionDatabases] = useState(false); // <-- NEW
+  const [availableNotionDatabases, setAvailableNotionDatabases] = useState<{id: string, name: string}[]>([]);
+  const [loadingNotionDatabases, setLoadingNotionDatabases] = useState(false);
 
   const {
     useDefault,
@@ -40,16 +40,19 @@ const SettingsContent = () => {
     apiKey,
     selectedModel,
     jiraProjectKey,
-    notionDatabaseId, // <-- NEW
-    setUseDefault,
-    setProvider,
-    setApiKey,
-    setSelectedModel,
-    setJiraProjectKey,
-    setNotionDatabaseId // <-- NEW
+    notionDatabaseId,
+    updateSetting // <-- Replaces individual setters
   } = useSettingsStore();
 
   const userId = user?.id || '';
+
+  // Wrapper functions to inject the userId into the updateSetting call
+  const setUseDefault = (val: boolean) => updateSetting(userId, 'useDefault', val);
+  const setProvider = (val: string) => updateSetting(userId, 'provider', val);
+  const setApiKey = (val: string) => updateSetting(userId, 'apiKey', val);
+  const setSelectedModel = (val: string) => updateSetting(userId, 'selectedModel', val);
+  const setJiraProjectKey = (val: string) => updateSetting(userId, 'jiraProjectKey', val);
+  const setNotionDatabaseId = (val: string) => updateSetting(userId, 'notionDatabaseId', val);
 
   // Fetch connection statuses on load
   useEffect(() => {
@@ -90,7 +93,7 @@ const SettingsContent = () => {
   }, [notionConnected, userId]);
 
   const handleJiraConnect = () => window.location.href = `${API_BASE}/auth/jira/connect?state=${userId}`;
-  const handleNotionConnect = () => window.location.href = `${API_BASE}/auth/notion/connect?state=${userId}`; // <-- NEW
+  const handleNotionConnect = () => window.location.href = `${API_BASE}/auth/notion/connect?state=${userId}`;
 
   const handleJiraProjectSelect = async (key: string) => {
     setJiraProjectKey(key);
@@ -201,7 +204,7 @@ const SettingsContent = () => {
             )}
           </div>
 
-          {/* Notion Integration (NEW) */}
+          {/* Notion Integration */}
           <div className="rounded-xl border border-border bg-card p-6 space-y-4">
             <h2 className="font-semibold text-lg flex items-center gap-2">Notion <BookOpen className="h-4 w-4 text-black dark:text-white" /></h2>
             <p className="text-sm text-muted-foreground">
