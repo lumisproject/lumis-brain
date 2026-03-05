@@ -182,8 +182,14 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
                 .maybe_single()
                 .execute()
             )
-            jira_proj = proj_row.data.get("jira_project_id") if proj_row and proj_row.data else None
-            notion_proj = proj_row.data.get("notion_project_id") if proj_row and proj_row.data else None
+            
+            if proj_row and proj_row.data:
+                proj_data = proj_row.data[0] if isinstance(proj_row.data, list) else proj_row.data
+                jira_proj = proj_data.get("jira_project_id")
+                notion_proj = proj_data.get("notion_project_id")
+            else:
+                jira_proj = None
+                notion_proj = None
 
             check_taskes(
                 user_id=user_id,
@@ -239,21 +245,22 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
             .select("id, last_commit, jira_project_id, notion_project_id")
             .eq("repo_url", req.repo_url)
             .eq("user_id", req.user_id)
-            .maybe_single()
+            .limit(1)
             .execute()
         )
         
         repo_name = get_repo_name_from_url(req.repo_url)
         commits = fetch_commits(repo_name)
 
-        if existing.data:
-            project_id = existing.data.get('id')
-            jira_proj = existing.data.get('jira_project_id')
-            notion_proj = existing.data.get('notion_project_id')
-            last_commit = existing.data.get('last_commit')
+        if existing and existing.data and len(existing.data) > 0:
+            project_data = existing.data[0]
+            
+            project_id = project_data.get('id')
+            jira_proj = project_data.get('jira_project_id')
+            notion_proj = project_data.get('notion_project_id')
+            last_commit = project_data.get('last_commit')
             logger.info(f"Existing project found for {req.repo_url} (ID: {project_id}, Repo: {repo_name}, Last Commit: {last_commit[:7] if last_commit else 'N/A'})")
         else:
-            # Fix: Save actual string hash instead of function reference
             latest_commit_sha = commits[0]["sha"] if commits else None
             insert_payload = {
                 "user_id": req.user_id,
@@ -263,6 +270,10 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
                 "last_commit": latest_commit_sha,
             }
             res = supabase.table("projects").insert(insert_payload).execute()
+            
+            if not res or not res.data:
+                 raise Exception("Failed to create project in database")
+                 
             project_id = res.data[0]['id']
             jira_proj = None
             notion_proj = None
@@ -334,7 +345,7 @@ async def delete_project(user_id: str, project_id: str):
         if not res or not res.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        db_project = res.data
+        db_project = res.data[0] if isinstance(res.data, list) else res.data
         if db_project.get("user_id") != user_id:
             raise HTTPException(status_code=403, detail="Forbidden")
 
