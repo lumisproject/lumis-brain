@@ -14,25 +14,27 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowLeft, Unplug, Plug, Loader2, BookOpen } from 'lucide-react';
+import { ArrowLeft, Unplug, Plug, Loader2, BookOpen, Save, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { API_BASE } from '@/lib/supabase';
+import { useToast } from '@/hooks/use-toast';
 
 const SettingsContent = () => {
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { user } = useUserStore();
   const { 
     jiraConnected, fetchJiraStatus, disconnectJira, 
-    notionConnected, fetchNotionStatus, disconnectNotion, // <-- NEW
+    notionConnected, fetchNotionStatus, disconnectNotion,
     project: currentProject 
   } = useProjectStore();
   
-  // Local state for fetching Jira projects & Notion databases
   const [availableJiraProjects, setAvailableJiraProjects] = useState<{key: string, name: string}[]>([]);
   const [loadingJiraProjects, setLoadingJiraProjects] = useState(false);
   
-  const [availableNotionDatabases, setAvailableNotionDatabases] = useState<{id: string, name: string}[]>([]); // <-- NEW
-  const [loadingNotionDatabases, setLoadingNotionDatabases] = useState(false); // <-- NEW
+  const [availableNotionDatabases, setAvailableNotionDatabases] = useState<{id: string, name: string}[]>([]);
+  const [loadingNotionDatabases, setLoadingNotionDatabases] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const {
     useDefault,
@@ -40,18 +42,17 @@ const SettingsContent = () => {
     apiKey,
     selectedModel,
     jiraProjectKey,
-    notionDatabaseId, // <-- NEW
+    notionDatabaseId,
     setUseDefault,
     setProvider,
     setApiKey,
     setSelectedModel,
     setJiraProjectKey,
-    setNotionDatabaseId // <-- NEW
+    setNotionDatabaseId
   } = useSettingsStore();
 
   const userId = user?.id || '';
 
-  // Fetch connection statuses on load
   useEffect(() => {
     if (userId) {
       fetchJiraStatus(userId);
@@ -59,7 +60,6 @@ const SettingsContent = () => {
     }
   }, [userId, fetchJiraStatus, fetchNotionStatus]);
 
-  // Fetch available Jira projects
   useEffect(() => {
     const fetchJiraProjects = async () => {
       if (jiraConnected && userId) {
@@ -74,7 +74,6 @@ const SettingsContent = () => {
     fetchJiraProjects();
   }, [jiraConnected, userId]);
 
-  // Fetch available Notion Databases
   useEffect(() => {
     const fetchNotionDatabases = async () => {
       if (notionConnected && userId) {
@@ -89,8 +88,46 @@ const SettingsContent = () => {
     fetchNotionDatabases();
   }, [notionConnected, userId]);
 
+  const handleSaveConfig = async () => {
+    if (!userId) return;
+    
+    setIsSaving(true);
+    try {
+      const user_config = useDefault ? {} : {
+        provider,
+        api_key: apiKey,
+        model: selectedModel
+      };
+
+      // We send the userId in the URL and the optional project_id in the body
+      const res = await fetch(`${API_BASE}/api/user/${userId}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          user_config,
+          project_id: currentProject?.id || null 
+        })
+      });
+
+      if (res.ok) {
+        toast({ 
+          title: "Settings Updated", 
+          description: currentProject?.id 
+            ? "LLM applied to this project and background tasks." 
+            : "LLM preferences saved to your profile." 
+        });
+      } else {
+        throw new Error();
+      }
+    } catch (error) {
+      toast({ title: "Error", description: "Could not save settings.", variant: "destructive" });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const handleJiraConnect = () => window.location.href = `${API_BASE}/auth/jira/connect?state=${userId}`;
-  const handleNotionConnect = () => window.location.href = `${API_BASE}/auth/notion/connect?state=${userId}`; // <-- NEW
+  const handleNotionConnect = () => window.location.href = `${API_BASE}/auth/notion/connect?state=${userId}`;
 
   const handleJiraProjectSelect = async (key: string) => {
     setJiraProjectKey(key);
@@ -110,7 +147,7 @@ const SettingsContent = () => {
       try {
         await fetch(`${API_BASE}/api/projects/${currentProject.id}/notion-mapping`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ notion_database_id: id })
+          body: JSON.stringify({ notion_project_id: id })
         });
       } catch (error) { console.error("Failed to save Notion mapping", error); }
     }
@@ -119,27 +156,37 @@ const SettingsContent = () => {
   return (
     <div className="min-h-screen bg-background">
       <div className="container max-w-2xl py-12 space-y-8">
-        <div className="flex items-center gap-3">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/dashboard')}>
-            <ArrowLeft className="h-4 w-4" />
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="icon" onClick={() => navigate('/dashboard')}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <h1 className="text-2xl font-bold">Settings</h1>
+          </div>
+          
+          <Button onClick={handleSaveConfig} disabled={isSaving} className="gap-2 shadow-sm">
+            {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save LLM Settings
           </Button>
-          <h1 className="text-2xl font-bold">Settings</h1>
         </div>
 
         {/* LLM Config */}
-        <div className="rounded-xl border border-border bg-card p-6 space-y-5">
-          <h2 className="font-semibold text-lg">LLM Configuration</h2>
+        <div className="rounded-xl border border-border bg-card p-6 space-y-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-1">
+            <Sparkles className="h-5 w-5 text-purple-500" />
+            <h2 className="font-semibold text-lg">AI Intelligence</h2>
+          </div>
 
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/50">
             <div>
               <Label className="font-medium">Use System Default</Label>
-              <p className="text-xs text-muted-foreground mt-0.5">Let Lumis choose the best model for you.</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Use the Lumis optimized environment (recommended).</p>
             </div>
             <Switch checked={useDefault} onCheckedChange={setUseDefault} />
           </div>
 
           {!useDefault && (
-            <div className="space-y-4 pt-2">
+            <div className="grid gap-4 pt-2 animate-in fade-in slide-in-from-top-2 duration-300">
               <div className="space-y-2">
                 <Label>Provider</Label>
                 <Select value={provider} onValueChange={setProvider}>
@@ -148,41 +195,40 @@ const SettingsContent = () => {
                     <SelectItem value="openrouter">OpenRouter</SelectItem>
                     <SelectItem value="openai">OpenAI</SelectItem>
                     <SelectItem value="anthropic">Anthropic</SelectItem>
-                    <SelectItem value="google">Google</SelectItem>
+                    <SelectItem value="google">Google Gemini</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
               <div className="space-y-2">
                 <Label>API Key</Label>
-                <Input type="password" placeholder="sk-..." value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <Input type="password" placeholder="Paste your API key here" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
               </div>
 
               <div className="space-y-2">
                 <Label>Model ID</Label>
-                <Input placeholder="stepfun/step-3.5-flash:free" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} />
+                <Input placeholder="e.g. anthropic/claude-3-sonnet" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} />
               </div>
             </div>
           )}
         </div>
 
-        {/* Integrations Grid */}
+        {/* Integrations */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          
-          {/* Jira Integration */}
-          <div className="rounded-xl border border-border bg-card p-6 space-y-4">
+          {/* Jira */}
+          <div className="rounded-xl border border-border bg-card p-6 space-y-4 shadow-sm">
             <h2 className="font-semibold text-lg flex items-center gap-2">Jira <Plug className="h-4 w-4 text-blue-500" /></h2>
             <p className="text-sm text-muted-foreground">
-              {jiraConnected ? 'Workspace connected.' : 'Map issues to code.'}
+              {jiraConnected ? 'Connected to Atlassian.' : 'Sync your tickets with AI.'}
             </p>
             
             {jiraConnected ? (
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label>Target Project</Label>
-                  <Select value={jiraProjectKey} onValueChange={handleJiraProjectSelect} disabled={loadingJiraProjects}>
+                  <Label className="text-xs uppercase text-muted-foreground">Active Project</Label>
+                  <Select value={jiraProjectKey} onValueChange={handleJiraProjectSelect} disabled={loadingJiraProjects || !currentProject}>
                     <SelectTrigger>
-                      {loadingJiraProjects ? <Loader2 className="w-4 h-4 animate-spin" /> : <SelectValue placeholder="Select a Jira Project" />}
+                      {loadingJiraProjects ? <Loader2 className="w-4 h-4 animate-spin" /> : <SelectValue placeholder={currentProject ? "Select Project" : "Open a project first"} />}
                     </SelectTrigger>
                     <SelectContent>
                       {availableJiraProjects.map((p) => (
@@ -190,31 +236,30 @@ const SettingsContent = () => {
                       ))}
                     </SelectContent>
                   </Select>
-                  {!currentProject?.id && <p className="text-xs text-yellow-500 mt-1">Open a project first to save mapping.</p>}
                 </div>
-                <Button variant="outline" className="w-full" onClick={() => disconnectJira(userId)}>
-                  <Unplug className="mr-2 h-4 w-4" /> Disconnect
+                <Button variant="secondary" size="sm" className="w-full text-xs" onClick={() => disconnectJira(userId)}>
+                  Disconnect
                 </Button>
               </div>
             ) : (
-              <Button className="w-full" onClick={handleJiraConnect}>Connect Jira</Button>
+              <Button variant="outline" className="w-full" onClick={handleJiraConnect}>Connect Jira</Button>
             )}
           </div>
 
-          {/* Notion Integration (NEW) */}
-          <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-            <h2 className="font-semibold text-lg flex items-center gap-2">Notion <BookOpen className="h-4 w-4 text-black dark:text-white" /></h2>
+          {/* Notion */}
+          <div className="rounded-xl border border-border bg-card p-6 space-y-4 shadow-sm">
+            <h2 className="font-semibold text-lg flex items-center gap-2">Notion <BookOpen className="h-4 w-4" /></h2>
             <p className="text-sm text-muted-foreground">
-              {notionConnected ? 'Workspace connected.' : 'Sync tasks with databases.'}
+              {notionConnected ? 'Connected to Notion.' : 'Automate your Notion docs.'}
             </p>
             
             {notionConnected ? (
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <Label>Target Database</Label>
-                  <Select value={notionDatabaseId} onValueChange={handleNotionDatabaseSelect} disabled={loadingNotionDatabases}>
+                  <Label className="text-xs uppercase text-muted-foreground">Active Database</Label>
+                  <Select value={notionDatabaseId} onValueChange={handleNotionDatabaseSelect} disabled={loadingNotionDatabases || !currentProject}>
                     <SelectTrigger>
-                      {loadingNotionDatabases ? <Loader2 className="w-4 h-4 animate-spin" /> : <SelectValue placeholder="Select a Database" />}
+                      {loadingNotionDatabases ? <Loader2 className="w-4 h-4 animate-spin" /> : <SelectValue placeholder={currentProject ? "Select Database" : "Open a project first"} />}
                     </SelectTrigger>
                     <SelectContent>
                       {availableNotionDatabases.map((db) => (
@@ -222,19 +267,15 @@ const SettingsContent = () => {
                       ))}
                     </SelectContent>
                   </Select>
-                  {!currentProject?.id && <p className="text-xs text-yellow-500 mt-1">Open a project first to save mapping.</p>}
                 </div>
-                <Button variant="outline" className="w-full" onClick={() => disconnectNotion(userId)}>
-                  <Unplug className="mr-2 h-4 w-4" /> Disconnect
+                <Button variant="secondary" size="sm" className="w-full text-xs" onClick={() => disconnectNotion(userId)}>
+                  Disconnect
                 </Button>
               </div>
             ) : (
-              <Button className="w-full bg-black text-white hover:bg-gray-800 dark:bg-white dark:text-black dark:hover:bg-gray-200" onClick={handleNotionConnect}>
-                Connect Notion
-              </Button>
+              <Button variant="outline" className="w-full" onClick={handleNotionConnect}>Connect Notion</Button>
             )}
           </div>
-
         </div>
       </div>
     </div>

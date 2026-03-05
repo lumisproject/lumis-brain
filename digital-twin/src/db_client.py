@@ -73,7 +73,6 @@ def save_memory_units(project_id, units_data_list):
             "unit_type": unit_data.get("type", "unknown"),
             "file_path": unit_data["file_path"],
             "content": unit_data.get("content"),
-            "summary": unit_data.get("summary"),
             "code_footprint": unit_data.get("footprint"),
             "embedding": unit_data.get("embedding"),
             "last_modified_at": unit_data.get("last_modified_at"),

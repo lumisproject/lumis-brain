@@ -16,7 +16,7 @@ class GraphRetriever:
     def fetch_file_content(self, file_path: str) -> List[Dict[str, Any]]:
         try:
             response = supabase.table("memory_units")\
-                .select("id, unit_name, unit_type, content, file_path, summary")\
+                .select("id, unit_name, unit_type, content, file_path")\
                 .eq("project_id", self.project_id)\
                 .eq("file_path", file_path)\
                 .execute()
@@ -31,7 +31,6 @@ class GraphRetriever:
         """
         try:
             # 1. Augment Query
-            # We expand the user's query to include technical synonyms
             augmented_query = self._augment_query(query, user_config=user_config)
             if augmented_query != query:
                 print(f"🔹 Augmented Query: {augmented_query}")
@@ -98,7 +97,6 @@ class GraphRetriever:
         source_names = [h['unit_name'] for h in initial_hits]
         
         try:
-            # 1. Find outgoing edges (What do these functions call?)
             edges = supabase.table("graph_edges")\
                 .select("target_unit_name")\
                 .eq("project_id", self.project_id)\
@@ -111,15 +109,14 @@ class GraphRetriever:
 
             target_names = [e['target_unit_name'] for e in edges.data]
             
-            # 2. Fetch content of these dependencies
+            # REMOVED 'summary' from the select statement here
             neighbors = supabase.table("memory_units")\
-                .select("id, unit_name, unit_type, content, file_path, summary")\
+                .select("id, unit_name, unit_type, content, file_path")\
                 .eq("project_id", self.project_id)\
                 .in_("unit_name", target_names)\
                 .limit(10)\
                 .execute()
                 
-            # 3. Merge and Deduplicate
             combined = initial_hits + (neighbors.data if neighbors.data else [])
             
             seen = set()
@@ -130,7 +127,52 @@ class GraphRetriever:
                     unique.append(node)
                     
             return unique
-
         except Exception as e:
             self.logger.error(f"Graph expansion failed: {e}")
             return initial_hits
+        
+    def get_architectural_context(self, unit_names: List[str]) -> str:
+        """
+        Fetches units that are directly connected to the 
+        provided list of units in the dependency graph.
+        """
+        if not unit_names:
+            return "No units identified for graph expansion."
+
+        try:
+            edges = supabase.table("graph_edges")\
+                .select("source_unit_name, target_unit_name")\
+                .eq("project_id", self.project_id)\
+                .or_(f"source_unit_name.in.({','.join(unit_names)}),target_unit_name.in.({','.join(unit_names)})")\
+                .limit(20)\
+                .execute()
+            
+            if not edges.data:
+                return "No immediate graph neighbors found."
+
+            related_units = set()
+            for edge in edges.data:
+                related_units.add(edge['source_unit_name'])
+                related_units.add(edge['target_unit_name'])
+            
+            for original in unit_names:
+                related_units.discard(original)
+
+            if not related_units:
+                return "No external dependencies found."
+
+            nodes = supabase.table("memory_units")\
+                .select("unit_name, file_path")\
+                .eq("project_id", self.project_id)\
+                .in_("unit_name", list(related_units))\
+                .execute()
+
+            context_lines = []
+            for node in nodes.data:
+                context_lines.append(f"- {node['unit_name']} (in {node['file_path']})")
+            
+            return "\n".join(context_lines)
+
+        except Exception as e:
+            self.logger.error(f"Failed to fetch architectural context: {e}")
+            return "Error retrieving graph context."

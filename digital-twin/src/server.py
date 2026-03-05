@@ -11,15 +11,11 @@ from src.agent import LumisAgent
 from src.ingestor import ingest_repo
 from src.db_client import supabase, get_project_risks
 from src.config import Config
-
-# Jira Integration Modules
 from src.jira_auth import jira_auth_router, get_valid_token
 from src.jira_client import get_accessible_resources, get_projects
-
-# Notion Integration Modules (NEW)
 from src.notion_auth import notion_auth_router, get_valid_notion_token
-
 from src.tasks_checking import check_taskes
+from src.code_reviewer import process_code_review
 
 # --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO)
@@ -139,12 +135,32 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
             logger.info("GitHub Zen ping received. Connection verified.")
             return {"status": "ok", "message": "Lumis Unified Gateway is listening"}
 
-        # Fix: Provide a default user_config for webhooks
-        user_config = {"user_id": user_id}
-        agent = LumisAgent(project_id=project_id, max_steps=3, user_config=user_config, mode="single-turn") 
+        proj_row = (
+            supabase.table("projects")
+            .select("jira_project_id, notion_project_id, user_config")
+            .eq("id", project_id)
+            .maybe_single()
+            .execute()
+        )
+        
+        db_user_config = {}
+        jira_proj = None
+        notion_proj = None
+
+        if proj_row and proj_row.data:
+            proj_data = proj_row.data[0] if isinstance(proj_row.data, list) else proj_row.data
+            jira_proj = proj_data.get("jira_project_id")
+            notion_proj = proj_data.get("notion_project_id")
+            db_user_config = proj_data.get("user_config") or {}
+
+        # Ensure user_id is in the config
+        db_user_config["user_id"] = user_id
+
+        # Pass the DB config to the Agent
+        agent = LumisAgent(project_id=project_id, max_steps=3, user_config=db_user_config, mode="single-turn")
 
         ref = payload.get("ref", "")
-        if "refs/heads/" in ref:
+        if ref in ["refs/heads/main", "refs/heads/master"]:
             new_sha = payload.get("after")
             repo_url = payload.get("repository", {}).get("clone_url")
 
@@ -161,7 +177,7 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
                 run_ingestion_pipeline,
                 repo_url=repo_url,
                 project_id=project_id,
-                user_config=user_config
+                user_config=db_user_config
             )
 
             raw_commits = payload.get("commits", [])
@@ -179,7 +195,7 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
                 supabase.table("projects")
                 .select("jira_project_id, notion_project_id")
                 .eq("id", project_id)
-                .maybe_single()
+                .limit(1)
                 .execute()
             )
             
@@ -190,6 +206,14 @@ async def github_webhook(user_id: str, project_id: str, request: Request, backgr
             else:
                 jira_proj = None
                 notion_proj = None
+
+            background_tasks.add_task(
+                process_code_review,
+                project_id=project_id,
+                commits=normalized_commits,
+                repo_name=repo_name,
+                agent=agent
+            )
 
             check_taskes(
                 user_id=user_id,
@@ -222,8 +246,8 @@ async def chat_endpoint(req: ChatRequest):
             active_agents[req.project_id] = agent
         else:
             agent = active_agents[req.project_id]
+            agent.user_config = req.user_config or {}
 
-        # Now the agent will remember its state and properly apply the reasoning flag
         response_text = await asyncio.to_thread(
             agent.ask, 
             req.query,
@@ -239,6 +263,7 @@ async def chat_endpoint(req: ChatRequest):
 async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
     try:
         logger.info(f"✨ Spawning agent for {req.repo_url}")
+        logger.info(f"user_config received: {req.user_config}")
 
         existing = (
             supabase.table("projects")
@@ -250,7 +275,7 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
         )
         
         repo_name = get_repo_name_from_url(req.repo_url)
-        commits = fetch_commits(repo_name)
+        commits = fetch_commits(repo_name) # here is the problem, we are exctaring all commits, but we should only extract the latest commit
 
         if existing and existing.data and len(existing.data) > 0:
             project_data = existing.data[0]
@@ -260,6 +285,9 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
             notion_proj = project_data.get('notion_project_id')
             last_commit = project_data.get('last_commit')
             logger.info(f"Existing project found for {req.repo_url} (ID: {project_id}, Repo: {repo_name}, Last Commit: {last_commit[:7] if last_commit else 'N/A'})")
+            
+            if req.user_config:
+                supabase.table("projects").update({"user_config": req.user_config}).eq("id", project_id).execute()
         else:
             latest_commit_sha = commits[0]["sha"] if commits else None
             insert_payload = {
@@ -268,6 +296,7 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
                 "jira_project_id": None,
                 "notion_project_id": None,
                 "last_commit": latest_commit_sha,
+                "user_config": req.user_config
             }
             res = supabase.table("projects").insert(insert_payload).execute()
             
@@ -287,6 +316,14 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
             repo_url=req.repo_url,
             project_id=project_id,
             user_config=agent.user_config
+        )
+
+        background_tasks.add_task(
+            process_code_review,
+            project_id=project_id,
+            commits=commits,
+            repo_name=repo_name,
+            agent=agent
         )
 
         check_taskes(
@@ -309,10 +346,32 @@ async def start_ingest(req: IngestRequest, background_tasks: BackgroundTasks):
 async def get_ingest_status(project_id: str):
     return ingestion_state.get(project_id, {"status": "idle", "logs": [], "step": "Ready"})
 
-@app.get("/api/risks/{project_id}")
+@app.get("/api/get_risks/{project_id}")
 async def get_risks_endpoint(project_id: str):
     risks = get_project_risks(project_id)
     return {"status": "success", "risks": risks if risks else []}
+
+@app.post("/api/user/{user_id}/config")
+async def update_global_user_config(user_id: str, payload: dict):
+    """
+    Saves the user's LLM settings. 
+    If a project_id is provided, it updates that specific project.
+    Otherwise, it can be stored as a global preference.
+    """
+    user_config = payload.get("user_config", {})
+    project_id = payload.get("project_id")
+
+    if project_id:
+        # Update specific project so background tasks (webhooks/risk) use it
+        supabase.table("projects").update({"user_config": user_config}).eq("id", project_id).execute()
+        
+        # Update active agent in memory if it exists
+        if project_id in active_agents:
+            active_agents[project_id].user_config = user_config
+    
+    # Optional: Save to a user_settings table to auto-apply to future projects
+        
+    return {"status": "success"}
 
 @app.get("/api/jira/projects/{user_id}")
 async def get_user_jira_projects(user_id: str):

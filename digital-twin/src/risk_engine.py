@@ -16,14 +16,12 @@ async def analyze_grouped_conflict_with_llm(target_name, target_unit, sources, u
         "Be concise. Focus on data flow, responsibilities, and architecture assumptions."
     )
     
-    target_summary = target_unit.get('summary', 'No summary available.')
-    
-    user_prompt = f"--- LEGACY CODE (Target: {target_name}) ---\nSummary: {target_summary}\n\n"
+    user_prompt = f"--- LEGACY CODE (Target: {target_name}) ---\n\n"
     user_prompt += f"--- RECENT CODE (Touching the legacy unit) ---\n"
     
     # Only pass the full summary for the top 3 most recently modified units to save tokens
     for i, s in enumerate(sources[:3]):
-        user_prompt += f"\nActive Unit {i+1}: {s['source_key']}\nSummary: {s['source_unit'].get('summary', 'No summary.')}\n"
+        user_prompt += f"\nActive Unit {i+1}: {s['source_key']}\n"
     
     # If there are more than 3 units, just list their names
     if len(sources) > 3:

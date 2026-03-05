@@ -2,7 +2,6 @@ import json
 import re
 import logging
 import ast
-import requests
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import BaseMessage
 from src.services import get_llm_completion
@@ -36,13 +35,6 @@ class LumisAgent:
         Main entry point for user queries. Intercepts Jira keywords to trigger 
         task cross-referencing, otherwise proceeds with code analysis.
         """
-        # 1. Detect Jira-related intent
-        jira_keywords = ["task", "work", "next", "jira", "assigned", "todo", "to-do"]
-        if any(word in user_query.lower() for word in jira_keywords):
-            jira_response = self._handle_jira_tasks(user_query)
-            if jira_response:
-                return jira_response
-        
         mode = self.user_config.get("mode", "single-turn")
         
         if mode == "single-turn":
@@ -94,67 +86,6 @@ class LumisAgent:
         )
         self._update_history(user_query, result['answer'], mode)
         return result['answer']
-
-    def _handle_jira_tasks(self, query: str) -> str:
-        """
-        Interactive tool to fetch active Jira issues and cross-reference them 
-        with relevant files in the current repository.
-        """
-        user_id = self.user_config.get("user_id") if self.user_config else None
-
-        if not user_id:
-            return None
-        
-        token = get_valid_token(user_id)
-        if not token:
-            return None
-
-        try:
-            # 1. Get Jira Workspace ID
-            resources = get_accessible_resources(token)
-            if not resources:
-                return None
-            cloud_id = resources[0]["id"]
-            
-            # 2. Fetch Issues assigned to the user that are not "Done"
-            jql = "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
-            search_url = f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/api/3/search"
-            res = requests.get(search_url, headers=jira_headers(token), params={"jql": jql, "maxResults": 3})
-            
-            issues = res.json().get("issues", [])
-            if not issues:
-                return None
-
-            # 3. Use GraphRetriever to find relevant code clues based on task summaries
-            task_summaries = []
-            code_context = []
-
-            for issue in issues:
-                summary = issue['fields']['summary']
-                key = issue['key']
-                task_summaries.append(f"[{key}] {summary}")
-                
-                relevant_code = self.retriever.search(summary)
-                for code in relevant_code:
-                    code_context.append(f"Task {key} might involve {code['file_path']} (found logic related to '{summary}')")
-
-            # 4. Final synthesis
-            prompt = (
-                f"User asked: '{query}'\n\n"
-                f"ACTIVE JIRA TASKS:\n" + "\n".join(task_summaries) + "\n\n"
-                f"CODEBASE CLUES:\n" + "\n".join(code_context) + "\n\n"
-                "Explain what the user should work on next and point them to the specific files in the repository."
-            )
-            
-            return get_llm_completion(
-                "You are Lumis, the Digital Twin Agent. You help developers bridge the gap between tasks and code.",
-                prompt,
-                user_config=self.user_config
-            )
-
-        except Exception as e:
-            self.logger.error(f"Jira Agent Error: {e}")
-            return f"I encountered an error while checking Jira: {str(e)}"
 
     def _build_step_prompt(self, processed_query, scratchpad):
         history_text = ""
@@ -369,3 +300,65 @@ class LumisAgent:
             return next((i for i in issues if i['key'] in match_id), None)
         except Exception:
             return None
+    
+    def analyze_risks(self, commit_message: str, code_diff: str) -> dict:
+        """
+        Standalone AI code reviewer that uses graph context to predict 
+        breaking changes and side effects.
+        """
+        # 1. Extract potential unit names from the diff to seed the graph search
+        potential_units = re.findall(r'(?:def|class)\s+([a-zA-Z_][a-zA-Z0-9_]*)', code_diff[:500])
+        
+        # 2. Get the architectural context (neighbors in the graph)
+        graph_context = self.retriever.get_architectural_context(potential_units)
+
+        # 3. Enhanced Prompt with Chain-of-Thought and Pragmatism
+        system_prompt = """
+        You are an elite, pragmatic Senior Code Reviewer and Software Architect.
+        Analyze the provided code diff for bugs, security risks, and breaking changes.
+        
+        CRITICAL RULES:
+        1. MINIMIZE FALSE POSITIVES: You are highly conservative. Do NOT flag minor stylistic choices, standard refactoring, missing docstrings, or highly theoretical edge cases. ONLY flag concrete, provable bugs or severe architectural violations. If in doubt, do not flag it.
+        2. DEEP STATE ANALYSIS: You must carefully trace variable lifecycles, data flow, and state mutations across the diff. 
+        3. ARCHITECTURAL AWARENESS: Use the 'ARCHITECTURAL CONTEXT' to identify side-effects on dependent systems (e.g., changing a signature that breaks a neighbor).
+        
+        JSON OUTPUT FORMAT (STRICT):
+        {
+          "analysis_trace": "Step-by-step execution trace. Briefly track variable state changes and logic flow here BEFORE concluding risks.",
+          "identified_risks": [
+            {
+              "risk_type": "SECURITY_FLAW" | "BUG" | "TECH_DEBT" | "BREAKING_CHANGE",
+              "severity": "High" | "Medium" | "Low",
+              "description": "Precise explanation of the exact failure mechanism.",
+              "affected_units": ["name_of_function_or_file"]
+            }
+          ]
+        }
+        - If the code is safe and has no concrete risks, leave "identified_risks" as an empty array [].
+        """
+        
+        user_prompt = f"""
+        COMMIT MESSAGE: {commit_message}
+        
+        ARCHITECTURAL CONTEXT (Graph Neighbors):
+        {graph_context}
+        
+        CODE CHANGES (DIFF):
+        {code_diff}
+        """
+        
+        try:
+            from src.services import get_llm_completion
+            response_text = get_llm_completion(system_prompt, user_prompt, user_config=self.user_config)
+            
+            clean_json = response_text.strip().replace('```json', '').replace('```', '')
+            start_idx = clean_json.find('{')
+            end_idx = clean_json.rfind('}')
+            if start_idx != -1 and end_idx != -1:
+                import json
+                return json.loads(clean_json[start_idx:end_idx + 1])
+            import json
+            return json.loads(clean_json)
+        except Exception as e:
+            self.logger.error(f"Code reviewer error: {e}")
+            return {"identified_risks": []}
