@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { supabase } from '@/lib/supabase';
 
 interface SettingsState {
   useDefault: boolean;
@@ -8,12 +8,14 @@ interface SettingsState {
   selectedModel: string;
   jiraProjectKey: string;
   notionDatabaseId: string;
-  setUseDefault: (val: boolean) => void;
-  setProvider: (val: string) => void;
-  setApiKey: (val: string) => void;
-  setSelectedModel: (val: string) => void;
-  setJiraProjectKey: (val: string) => void;
-  setNotionDatabaseId: (val: string) => void;
+  setSettings: (settings: Partial<Omit<SettingsState, 'setSettings' | 'updateSetting' | 'fetchSettings'>>) => void;
+  // ISSUE 2 FIX: Strongly typed key and corresponding value
+  updateSetting: <K extends keyof Omit<SettingsState, 'setSettings' | 'updateSetting' | 'fetchSettings'>>(
+    userId: string, 
+    key: K, 
+    value: SettingsState[K]
+  ) => Promise<void>;
+  fetchSettings: (userId: string) => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>()(
