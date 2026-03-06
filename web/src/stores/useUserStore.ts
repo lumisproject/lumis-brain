@@ -13,6 +13,7 @@ interface UserState {
   signUp: (email: string, password: string) => Promise<boolean>;
   signOut: () => Promise<void>;
   checkSession: () => Promise<void>;
+  setupAuthListener: () => { unsubscribe: () => void }; // NEW
   clearError: () => void;
   clearUser: () => void; // Added missing property
 }
@@ -37,7 +38,7 @@ export const useUserStore = create<UserState>((set, get) => ({
     } catch {
       // ignore
     }
-
+    try { useChatStore.getState().clearMessages(); } catch {}
     return true;
   },
 
@@ -55,7 +56,7 @@ export const useUserStore = create<UserState>((set, get) => ({
     } catch {
       // ignore
     }
-
+    try { useChatStore.getState().clearMessages(); } catch {}
     return true;
   },
 
@@ -86,9 +87,23 @@ export const useUserStore = create<UserState>((set, get) => ({
     const { data: { session } } = await supabase.auth.getSession();
     set({ user: session?.user ?? null, session, loading: false });
 
-    supabase.auth.onAuthStateChange((_event, session) => {
+    if (session?.user) {
+      await useSettingsStore.getState().fetchSettings(session.user.id);
+    }
+  },
+
+  // ISSUE 3 FIX: Decoupled listener with an unsubscribe method
+  setupAuthListener: () => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       set({ user: session?.user ?? null, session });
+      if (session?.user) {
+        useSettingsStore.getState().fetchSettings(session.user.id);
+      }
     });
+    
+    return {
+      unsubscribe: () => subscription.unsubscribe()
+    };
   },
 
   clearError: () => set({ error: null }),
