@@ -12,7 +12,7 @@ async def process_code_review(project_id: str, commits: list, repo_name: str, ag
         message = commit.get("message", "")
         sha = commit.get("sha")
         
-        # Skip empty messages or merge commits
+        if sha is None: sha = "unknown"
         if not message or "merge" in message.lower():
             continue
 

@@ -1,6 +1,8 @@
 import os
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from fastapi import HTTPException, Header
+
 
 load_dotenv()
 
@@ -120,3 +122,28 @@ def delete_previous_risks(project_id):
         .delete().eq("project_id", project_id)\
         .eq("risk_type", "Legacy Conflict")\
         .execute()
+
+def get_global_user_config(user_id: str) -> dict:
+    res = (
+        supabase.table("user_settings")
+        .select("user_config")
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    
+    if res and res.data and res.data.get("user_config"):
+        return res.data["user_config"]
+    
+    return {"use_default": True}
+
+def get_current_user(authorization: str = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    
+    token = authorization.split(" ")[1]
+
+    user_response = supabase.auth.get_user(token)
+    if not user_response or not user_response.user:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return user_response.user

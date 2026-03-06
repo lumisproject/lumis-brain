@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { supabase, API_BASE } from '@/lib/supabase';
 import { AuthGuard } from '@/components/AuthGuard';
 import { useUserStore } from '@/stores/useUserStore';
 import { useProjectStore } from '@/stores/useProjectStore';
@@ -14,9 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowLeft, Unplug, Plug, Loader2, BookOpen, Save, Sparkles } from 'lucide-react';
+import { ArrowLeft, Plug, Loader2, BookOpen, Save, Sparkles } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { API_BASE } from '@/lib/supabase';
 import { useToast } from '@/hooks/use-toast';
 
 const SettingsContent = () => {
@@ -31,10 +31,10 @@ const SettingsContent = () => {
   
   const [availableJiraProjects, setAvailableJiraProjects] = useState<{key: string, name: string}[]>([]);
   const [loadingJiraProjects, setLoadingJiraProjects] = useState(false);
-  
   const [availableNotionDatabases, setAvailableNotionDatabases] = useState<{id: string, name: string}[]>([]);
   const [loadingNotionDatabases, setLoadingNotionDatabases] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isFetchingConfig, setIsFetchingConfig] = useState(true);
 
   const {
     useDefault,
@@ -52,6 +52,60 @@ const SettingsContent = () => {
   } = useSettingsStore();
 
   const userId = user?.id || '';
+
+  const [localApiKey, setLocalApiKey] = useState(apiKey);
+  const [localModel, setLocalModel] = useState(selectedModel);
+
+  // Sync local state if store updates elsewhere
+  useEffect(() => setLocalApiKey(apiKey), [apiKey]);
+  useEffect(() => setLocalModel(selectedModel), [selectedModel]);
+
+  const handleApiKeyBlur = () => {
+    if (localApiKey !== apiKey) setApiKey(localApiKey);
+  };
+
+  const handleModelBlur = () => {
+    if (localModel !== selectedModel) setSelectedModel(localModel);
+  };
+
+  // --- NEW FIX: FETCH SAVED CONFIG ON LOAD ---
+  useEffect(() => {
+    const fetchUserConfig = async () => {
+      if (!userId) return;
+      setIsFetchingConfig(true);
+      try {
+        const { data, error } = await supabase
+          .from('user_settings')
+          .select('user_config')
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        if (data && data.user_config) {
+          const config = data.user_config;
+          // Apply saved settings
+          setUseDefault(config.use_default !== false); // Default to true if missing
+          if (config.provider) setProvider(config.provider);
+          if (config.model) {
+            setSelectedModel(config.model);
+            setLocalModel(config.model);
+          }
+          if (config.api_key) {
+            // Never put the encrypted string in the UI, just show the mask
+            setApiKey("••••••••••••••••");
+            setLocalApiKey("••••••••••••••••");
+          }
+        } else {
+          // If no config exists in the database for this user, force default mode
+          setUseDefault(true);
+        }
+      } catch (err) {
+        console.error("Failed to load user config:", err);
+      } finally {
+        setIsFetchingConfig(false);
+      }
+    };
+    fetchUserConfig();
+  }, [userId, setUseDefault, setProvider, setSelectedModel, setApiKey]);
 
   useEffect(() => {
     if (userId) {
@@ -90,37 +144,62 @@ const SettingsContent = () => {
 
   const handleSaveConfig = async () => {
     if (!userId) return;
-    
+
+    // --- NEW VALIDATION: Prevent saving empty inputs ---
+    if (!useDefault) {
+      if (!localApiKey?.trim() || !localModel?.trim()) {
+        toast({
+          title: "Missing Information",
+          description: "Please provide both an API Key and a Model ID, or switch to 'System Default'.",
+          variant: "destructive"
+        });
+        return; // Stop the function here so it doesn't save
+      }
+    }
+
     setIsSaving(true);
     try {
-      const user_config = useDefault ? {} : {
+      // 1. GET THE TOKEN DIRECTLY FROM SUPABASE
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      if (!token) {
+        throw new Error("No active authentication session found. Please log in again.");
+      }
+
+      // 2. Prepare Payload
+      const payload = {
         provider,
-        api_key: apiKey,
-        model: selectedModel
+        apiKey: localApiKey, 
+        selectedModel: localModel,
+        useDefault,
       };
 
-      // We send the userId in the URL and the optional project_id in the body
-      const res = await fetch(`${API_BASE}/api/user/${userId}/config`, {
+      // 3. Make the Request
+      const res = await fetch(`${API_BASE}/api/settings/${userId}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          user_config,
-          project_id: currentProject?.id || null 
-        })
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify(payload)
       });
 
       if (res.ok) {
         toast({ 
-          title: "Settings Updated", 
-          description: currentProject?.id 
-            ? "LLM applied to this project and background tasks." 
-            : "LLM preferences saved to your profile." 
+          title: "Settings Saved", 
+          description: "Your configuration has been encrypted and stored." 
         });
       } else {
-        throw new Error();
+        const errorData = await res.json();
+        throw new Error(errorData.detail || "Failed to save");
       }
     } catch (error) {
-      toast({ title: "Error", description: "Could not save settings.", variant: "destructive" });
+      toast({ 
+        title: "Error", 
+        description: error instanceof Error ? error.message : "Could not save settings.", 
+        variant: "destructive" 
+      });
     } finally {
       setIsSaving(false);
     }
@@ -153,6 +232,14 @@ const SettingsContent = () => {
     }
   };
 
+  if (isFetchingConfig) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container max-w-2xl py-12 space-y-8">
@@ -174,7 +261,7 @@ const SettingsContent = () => {
         <div className="rounded-xl border border-border bg-card p-6 space-y-5 shadow-sm">
           <div className="flex items-center gap-2 mb-1">
             <Sparkles className="h-5 w-5 text-purple-500" />
-            <h2 className="font-semibold text-lg">AI Intelligence</h2>
+            <h2 className="font-semibold text-lg">Lumis Intelligence</h2>
           </div>
 
           <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30 border border-border/50">
@@ -202,12 +289,23 @@ const SettingsContent = () => {
 
               <div className="space-y-2">
                 <Label>API Key</Label>
-                <Input type="password" placeholder="Paste your API key here" value={apiKey} onChange={(e) => setApiKey(e.target.value)} />
+                <Input 
+                  type="password" 
+                  placeholder={apiKey ? "••••••••••••••••" : "Paste your API key here"} 
+                  value={localApiKey} 
+                  onChange={(e) => setLocalApiKey(e.target.value)} 
+                  onBlur={handleApiKeyBlur} 
+                />
               </div>
 
               <div className="space-y-2">
                 <Label>Model ID</Label>
-                <Input placeholder="e.g. anthropic/claude-3-sonnet" value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} />
+                <Input 
+                  placeholder="e.g. gpt-4o or claude-3-5-sonnet-latest" 
+                  value={localModel} 
+                  onChange={(e) => setLocalModel(e.target.value)} 
+                  onBlur={handleModelBlur} 
+                />
               </div>
             </div>
           )}

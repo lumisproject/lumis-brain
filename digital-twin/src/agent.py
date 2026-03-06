@@ -69,7 +69,7 @@ class LumisAgent:
             
             print(f"🤔 Step {step+1} ({confidence}%, ({action})): {thought}")
 
-            if confidence >= 95 or action == "final_answer":
+            if confidence >= 90 or action == "final_answer":
                 break
             
             obs = self._execute_tool(action, data.get("action_input"), collected_elements, scratchpad, processed_query)
@@ -307,7 +307,7 @@ class LumisAgent:
         breaking changes and side effects.
         """
         # 1. Extract potential unit names from the diff to seed the graph search
-        potential_units = re.findall(r'(?:def|class)\s+([a-zA-Z_][a-zA-Z0-9_]*)', code_diff[:500])
+        potential_units = re.findall(r'(?:def|class)\s+([a-zA-Z_][a-zA-Z0-9_]*)', code_diff[:10000])
         
         # 2. Get the architectural context (neighbors in the graph)
         graph_context = self.retriever.get_architectural_context(potential_units)

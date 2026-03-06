@@ -20,19 +20,22 @@ export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
       useDefault: true,
-      provider: 'openrouter',
+      
+      provider: '',
       apiKey: '',
-      selectedModel: 'stepfun/step-3.5-flash:free',
-      jiraProjectKey: '', // <-- Initial state
-      notionDatabaseId: '', // <-- Initial state for Notion Database ID
-
+      selectedModel: '', 
+      jiraProjectKey: '',
+      notionDatabaseId: '',
+      
       setUseDefault: (val) => set({ useDefault: val }),
       setProvider: (val) => set({ provider: val }),
       setApiKey: (val) => set({ apiKey: val }),
       setSelectedModel: (val) => set({ selectedModel: val }),
-      setJiraProjectKey: (val) => set({ jiraProjectKey: val }), // <-- Action
-      setNotionDatabaseId: (val) => set({ notionDatabaseId: val }), // <-- Action for Notion Database ID
+      setJiraProjectKey: (val) => set({ jiraProjectKey: val }),
+      setNotionDatabaseId: (val) => set({ notionDatabaseId: val }),
     }),
-    { name: 'lumis-settings' }
+    {
+      name: 'lumis-settings',
+    }
   )
 );

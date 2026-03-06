@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '@/lib/supabase';
 import type { User, Session } from '@supabase/supabase-js';
 import { useChatStore } from '@/stores/useChatStore';
+import { useSettingsStore } from '@/stores/useSettingsStore'; // Import settings store
 
 interface UserState {
   user: User | null;
@@ -13,9 +14,10 @@ interface UserState {
   signOut: () => Promise<void>;
   checkSession: () => Promise<void>;
   clearError: () => void;
+  clearUser: () => void; // Added missing property
 }
 
-export const useUserStore = create<UserState>((set) => ({
+export const useUserStore = create<UserState>((set, get) => ({
   user: null,
   session: null,
   loading: true,
@@ -30,7 +32,6 @@ export const useUserStore = create<UserState>((set) => ({
     }
     set({ user: data.user, session: data.session, loading: false });
 
-    // Reset chat when a user logs in (new or returning)
     try {
       useChatStore.getState().clearMessages();
     } catch {
@@ -49,7 +50,6 @@ export const useUserStore = create<UserState>((set) => ({
     }
     set({ user: data.user, session: data.session, loading: false });
 
-    // New accounts should always start with an empty chat
     try {
       useChatStore.getState().clearMessages();
     } catch {
@@ -61,14 +61,24 @@ export const useUserStore = create<UserState>((set) => ({
 
   signOut: async () => {
     await supabase.auth.signOut();
-    set({ user: null, session: null });
-
-    // Clear chat history when logging out so the next user doesn't see it
+    
+    // Clear current store state
+    get().clearUser(); 
+    
+    // Clear other store states to prevent account bleeding
     try {
       useChatStore.getState().clearMessages();
-    } catch {
-      // ignore
+      // Safely clear settings store persistence
+      if (useSettingsStore.persist) {
+        useSettingsStore.persist.clearStorage();
+      }
+    } catch (e) {
+      console.error("Error clearing stores during sign out:", e);
     }
+    
+    // NOTE: Navigation should happen in the component calling signOut, 
+    // or via window.location.href for a hard reset
+    window.location.href = '/login'; 
   },
 
   checkSession: async () => {
@@ -82,4 +92,7 @@ export const useUserStore = create<UserState>((set) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  // Implementation of clearUser
+  clearUser: () => set({ user: null, session: null, error: null }),
 }));
