@@ -34,3 +34,6 @@ class Config:
     NOTION_CLIENT_ID = os.getenv("NOTION_CLIENT_ID")
     NOTION_CLIENT_SECRET = os.getenv("NOTION_CLIENT_SECRET")
     NOTION_REDIRECT_URI = os.getenv("NOTION_REDIRECT_URI")
+
+    # Encryption settings
+    ENCRYPTION_KEY = os.getenv("FERNET_SECRET_KEY")

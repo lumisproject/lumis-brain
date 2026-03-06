@@ -96,7 +96,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   fetchRisks: async (projectId) => {
     try {
-      const res = await fetch(`${API_BASE}/api/risks/${projectId}`);
+      const res = await fetch(`${API_BASE}/api/get_risks/${projectId}`);
       const data = await res.json();
       const apiRisks = (data?.risks ?? []) as any[];
 

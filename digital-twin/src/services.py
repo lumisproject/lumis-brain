@@ -3,6 +3,7 @@ import numpy as np
 import requests
 import logging
 from src.config import Config
+from src.cryptography import decrypt_value
 
 # --- LangChain Imports ---
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -36,6 +37,9 @@ def get_llm(temperature=0.3, user_config=None):
     provider = user_config.get("provider") or Config.DEFAULT_LLM_PROVIDER
     api_key = user_config.get("api_key") or Config.DEFAULT_LLM_API_KEY
     model_name = user_config.get("model") or Config.DEFAULT_LLM_MODEL
+
+    if user_config and user_config.get("api_key") and user_config.get("api_key") != Config.DEFAULT_LLM_API_KEY:
+        api_key = decrypt_value(api_key)
 
     print(f"Using LLM Provider: {provider}, Model: {model_name}, Reasoning: {reasoning_enabled}")
 
