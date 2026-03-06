@@ -36,6 +36,10 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'lumis-settings',
+      partialize: (state) => 
+        Object.fromEntries(
+          Object.entries(state).filter(([key]) => key !== 'apiKey')
+        ) as Partial<SettingsState>,
     }
   )
 );

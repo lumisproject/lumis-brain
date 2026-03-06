@@ -436,13 +436,6 @@ async def delete_project(user_id: str, project_id: str):
         logger.error(f"Project delete failed for {project_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete project")
 
-@app.post("/api/projects/{project_id}/jira-mapping")
-async def update_jira_mapping(project_id: str, payload: dict):
-    jira_key = payload.get("jira_project_id")
-    if not jira_key: raise HTTPException(status_code=400, detail="Missing jira_project_id")
-    supabase.table("projects").update({"jira_project_id": jira_key}).eq("id", project_id).execute()
-    return {"status": "success", "jira_project_id": jira_key}
-
 # --- NEW NOTION ENDPOINTS ---
 @app.get("/api/notion/databases/{user_id}")
 async def get_user_notion_databases(user_id: str):
@@ -456,13 +449,47 @@ async def get_user_notion_databases(user_id: str):
     databases = get_accessible_databases(access_token)
     return databases
 
+@app.post("/api/projects/{project_id}/jira-mapping")
+async def update_jira_mapping(
+    project_id: str, 
+    payload: dict,
+    current_user = Depends(get_current_user) # 1. Enforce Auth
+):
+    jira_key = payload.get("jira_project_id")
+    if not jira_key: 
+        raise HTTPException(status_code=400, detail="Missing jira_project_id")
+        
+    # 2. Enforce Ownership
+    res = supabase.table("projects").select("user_id").eq("id", project_id).maybe_single().execute()
+    if not res or not res.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if res.data["user_id"] != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not own this project")
+
+    # 3. Update safely
+    supabase.table("projects").update({"jira_project_id": jira_key}).eq("id", project_id).execute()
+    return {"status": "success", "jira_project_id": jira_key}
+
+
 @app.post("/api/projects/{project_id}/notion-mapping")
-async def update_notion_mapping(project_id: str, payload: dict):
+async def update_notion_mapping(
+    project_id: str, 
+    payload: dict,
+    current_user = Depends(get_current_user) # 1. Enforce Auth
+):
     """Saves the user's selected Notion database ID."""
     notion_db_id = payload.get("notion_project_id")
     if not notion_db_id:
         raise HTTPException(status_code=400, detail="Missing notion_project_id")
         
+    # 2. Enforce Ownership
+    res = supabase.table("projects").select("user_id").eq("id", project_id).maybe_single().execute()
+    if not res or not res.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if res.data["user_id"] != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not own this project")
+        
+    # 3. Update safely
     supabase.table("projects").update({"notion_project_id": notion_db_id}).eq("id", project_id).execute()
     return {"status": "success", "notion_project_id": notion_db_id}
 
